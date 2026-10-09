@@ -1,4 +1,4 @@
-Reason: mod: a DEBUG file-select block right of C (a copy of block A's scene entry, with its own face) opens a DEBUG menu: SANDBOX starts a new game in the whitebox test level (zzzz-mod-05), TEST does nothing yet
+Reason: mod: the file blocks are laid out again (15% further left, closer together) and a DEBUG block (a copy of block A with its own D texture) stands where C was; it opens a DEBUG menu: SANDBOX starts a new game in the whitebox test level (zzzz-mod-05), TEST does nothing yet
 --- a/include/MoveBG/MapObjOption.hpp
 +++ b/include/MoveBG/MapObjOption.hpp
 @@ -5,6 +5,12 @@
@@ -45,7 +45,30 @@ Reason: mod: a DEBUG file-select block right of C (a copy of block A's scene ent
  }
 --- a/src/GC2D/CardLoad.cpp
 +++ b/src/GC2D/CardLoad.cpp
-@@ -764,6 +764,11 @@
+@@ -185,6 +185,12 @@
+ // temporary region is short (buffer and local_90 sit adjacent in both);
+ // callee-saved GPRs are colored one off in most loops. Function-scope loop
+ // counters are worse.
++#ifdef TARGET_PC
++// Mod: the file blocks' labels and menus follow the blocks' new layout
++// (MapObjOption.cpp); defined with the DEBUG menu below.
++static void port_shift_file_panes(TCardLoad* p);
++#endif
++
+ void TCardLoad::load(JSUMemoryInputStream& stream)
+ {
+ 	JDrama::TViewObj::load(stream);
+@@ -307,6 +313,9 @@
+ 			unk3A8[i][j] = unk378[i][j]->getPane()->getBounds();
+ 		}
+ 	}
++#ifdef TARGET_PC
++	port_shift_file_panes(this);
++#endif
+ 
+ 	unk468 = new TExPane(unk28, '\0w_7');
+ 	unk46C = unk468->getPane()->getBounds();
+@@ -764,6 +773,11 @@
  	p->unk258 = 0;
  }
  
@@ -57,7 +80,7 @@ Reason: mod: a DEBUG file-select block right of C (a copy of block A's scene ent
  void TCardLoad::perform(u32 cue, JDrama::TGraphics* graphics)
  {
  	if (cue & CUE_MOVE) {
-@@ -925,6 +930,9 @@
+@@ -925,6 +939,9 @@
  		switch (unk14) {
  		case 0:
  			unk28->draw(0, 0, &graph);
@@ -67,7 +90,7 @@ Reason: mod: a DEBUG file-select block right of C (a copy of block A's scene ent
  			break;
  		case 1:
  			unk2C->draw(0, 0, &graph);
-@@ -2320,6 +2328,174 @@
+@@ -2320,6 +2337,232 @@
  	}
  }
  #ifdef TARGET_PC
@@ -173,6 +196,64 @@ Reason: mod: a DEBUG file-select block right of C (a copy of block A's scene ent
 +	return true;
 +}
 +
++// Move a pane (and where its animations start from) sideways.
++static void port_shift_expane(TExPane* ep, int dx)
++{
++	if (ep == nullptr || ep->getPane() == nullptr)
++		return;
++	ep->mInitialBounds.x1 += dx;
++	ep->mInitialBounds.x2 += dx;
++	ep->getPane()->add(dx, 0);
++}
++
++// Whether `pane` sits anywhere inside `outer` (J2DPane::getParentPane is
++// empty in the decomp, so walk the pane tree).
++static bool port_pane_inside(J2DPane* pane, J2DPane* outer)
++{
++	if (pane == nullptr || outer == nullptr)
++		return false;
++	for (JSUTree<J2DPane>* t = pane->getPaneTree()->getParent(); t != nullptr;
++	     t = t->getParent())
++		if (t->getObject() == outer)
++			return true;
++	return false;
++}
++
++// The blocks moved left by 15% of the A-C span and closed up so a fourth fits
++// where C was (MapObjOption.cpp). Their labels and menus get the same layout
++// on screen: each block's panes move by its block's share.
++static void port_shift_file_panes(TCardLoad* p)
++{
++	f32 x[3];
++	for (int i = 0; i < 3; ++i) {
++		if (p->unk2A4[i] == nullptr)
++			return;
++		const JUTRect& r = p->unk2A4[i]->mInitialBounds;
++		x[i]             = (r.x1 + r.x2) * 0.5f;
++	}
++	f32 a1   = x[0] - (x[2] - x[0]) * 0.15f;
++	f32 step = (x[2] - a1) / 3.0f;
++	for (int i = 0; i < 3; ++i) {
++		int dx = (int)(a1 + step * i - x[i] + (a1 + step * i - x[i] < 0 ? -0.5f : 0.5f));
++		if (dx == 0)
++			continue;
++		J2DPane* label = p->unk2A4[i]->getPane();
++		J2DPane* menu  = p->unk33C[i] != nullptr ? p->unk33C[i]->getPane() : nullptr;
++		port_shift_expane(p->unk2A4[i], dx);
++		// the menu box and its items, unless they sit inside a pane that moved
++		if (menu != nullptr && !port_pane_inside(menu, label))
++			port_shift_expane(p->unk33C[i], dx);
++		for (int j = 0; j < 4; ++j) {
++			TExPane* item = p->unk378[i][j];
++			if (item == nullptr || item->getPane() == nullptr)
++				continue;
++			if (!port_pane_inside(item->getPane(), label)
++			    && !port_pane_inside(item->getPane(), menu))
++				port_shift_expane(item, dx);
++		}
++	}
++}
++
 +static void port_debug_text(JUTFont* font, int sizeX, int sizeY,
 +                            const JUTRect& box, const char* text,
 +                            JUtility::TColor top, JUtility::TColor bottom)
@@ -242,7 +323,7 @@ Reason: mod: a DEBUG file-select block right of C (a copy of block A's scene ent
  // port: SMS_WARP=stage,scenario[,shines] sends a file-select load to another
  // area (debugging; 1,0,1 is Delfino Plaza as it is after the airstrip).
  static void port_warp_after_file_select()
-@@ -2554,6 +2730,10 @@
+@@ -2554,6 +2797,10 @@
  		break;
  
  	case PROGRESS_UNK13: {
@@ -253,7 +334,7 @@ Reason: mod: a DEBUG file-select block right of C (a copy of block A's scene ent
  		if (unk24 != 0)
  			selectBookmark(PROGRESS_UNK2, changeMode(unk24), true);
  		int rc = gpCardManager->probe();
-@@ -2838,6 +3018,7 @@
+@@ -2838,6 +3085,7 @@
  			gpMarDirector->setNextStage(1, nullptr);
  #ifdef TARGET_PC
  		port_warp_after_file_select();
@@ -263,7 +344,7 @@ Reason: mod: a DEBUG file-select block right of C (a copy of block A's scene ent
  	} break;
 --- a/src/MoveBG/MapObjOption.cpp
 +++ b/src/MoveBG/MapObjOption.cpp
-@@ -17,6 +17,282 @@
+@@ -17,6 +17,553 @@
  // 234 bytes of .rodata order.
  #include <Map/MapCollisionEntry.hpp>
  
@@ -274,6 +355,15 @@ Reason: mod: a DEBUG file-select block right of C (a copy of block A's scene ent
 +#include <JSystem/J3D/J3DGraphBase/J3DSys.hpp>
 +#include <JSystem/J3D/J3DGraphAnimator/J3DModel.hpp>
 +#include <JSystem/J3D/J3DGraphAnimator/J3DJoint.hpp>
++#include <JSystem/J3D/J3DGraphBase/J3DTexture.hpp>
++#include <JSystem/J3D/J3DGraphLoader/J3DModelLoader.hpp>
++#include <JSystem/JKernel/JKRFileLoader.hpp>
++#include <JSystem/ResTIMG.hpp>
++#include <M3DUtil/SDLModel.hpp>
++#include <M3DUtil/MActor.hpp>
++#include <Strategic/ObjModel.hpp>
++#include <MoveBG/MapObjManager.hpp>
++#include <stdio.h>
 +#include <dolphin/gx.h>
 +#include <Player/MarioAccess.hpp>
 +
@@ -288,10 +378,6 @@ Reason: mod: a DEBUG file-select block right of C (a copy of block A's scene ent
 +
 +namespace {
 +
-+u8* s_portBlockABody     = nullptr; // block A's entry, from its name on
-+s32 s_portBlockABodySize = 0;
-+JGeometry::TVec3<f32> s_portBlockBPos;
-+bool s_portHaveBlockBPos = false;
 +TFileLoadBlock* s_portDebugBlock     = nullptr;
 +JDrama::TNameRef* s_portDebugAfter   = nullptr;
 +bool s_portMakingDebugBlock          = false;
@@ -316,73 +402,339 @@ Reason: mod: a DEBUG file-select block right of C (a copy of block A's scene ent
 +	return s_portDebugBlock;
 +}
 +
-+void TFileLoadBlock::load(JSUMemoryInputStream& stream)
++namespace {
++
++f32 portGetBE32(const u8* p)
 +{
-+	const u8* body = (const u8*)stream.mBuffer + stream.mPosition;
-+	const s32 size = stream.mLength - stream.mPosition;
-+
-+	TMapObjBase::load(stream);
-+
-+	if (s_portMakingDebugBlock)
-+		return;
-+
-+	if (unk138 == 0) {
-+		// a new file-select scene: keep A's entry for the copy
-+		free(s_portBlockABody);
-+		s_portBlockABody     = (u8*)malloc(size);
-+		s_portBlockABodySize = s_portBlockABody ? size : 0;
-+		if (s_portBlockABody)
-+			memcpy(s_portBlockABody, body, size);
-+		s_portHaveBlockBPos = false;
-+		s_portDebugBlock    = nullptr;
-+		s_portDebugAfter = nullptr;
-+		return;
-+	}
-+
-+	if (unk138 == 1) {
-+		s_portBlockBPos     = mPosition;
-+		s_portHaveBlockBPos = true;
-+		return;
-+	}
-+
-+	if (unk138 != 2 || !s_portHaveBlockBPos || s_portBlockABody == nullptr
-+	    || s_portBlockABodySize < 4)
-+		return;
-+
-+	// The entry starts with the key (u16) and name (u16 length + bytes), then
-+	// the position as three big-endian floats.
-+	const u8* a     = s_portBlockABody;
-+	s32 nameLen     = (a[2] << 8) | a[3];
-+	s32 posOffset   = 4 + nameLen;
-+	if (posOffset + 12 > s_portBlockABodySize)
-+		return;
-+
-+	u8* copy = (u8*)malloc(s_portBlockABodySize);
-+	if (copy == nullptr)
-+		return;
-+	memcpy(copy, s_portBlockABody, s_portBlockABodySize);
-+	// as far right of C as C is right of B
-+	portPutBE32(copy + posOffset + 0, mPosition.x * 2.0f - s_portBlockBPos.x);
-+	portPutBE32(copy + posOffset + 4, mPosition.y * 2.0f - s_portBlockBPos.y);
-+	portPutBE32(copy + posOffset + 8, mPosition.z * 2.0f - s_portBlockBPos.z);
-+
-+	TFileLoadBlock* block = new TFileLoadBlock;
-+	JSUMemoryInputStream copyStream(copy, s_portBlockABodySize);
-+	s_portMakingDebugBlock = true;
-+	block->load(copyStream);
-+	s_portMakingDebugBlock = false;
-+	// copy stays allocated: a few bytes, once per file-select scene
-+
-+	s_portDebugBlock = block;
-+	s_portDebugAfter = this;
++	u32 v = ((u32)p[0] << 24) | ((u32)p[1] << 16) | ((u32)p[2] << 8) | p[3];
++	f32 f;
++	memcpy(&f, &v, 4);
++	return f;
 +}
 +
-+namespace {
++// Which file block an entry is, from its name (key u16, name length u16,
++// name bytes): 0, 1, 2 for A, B, C, else -1. The names are Shift-JIS, as
++// the scene file's are.
++int portFileBlockIndex(const u8* body, s32 size, s32* posOffset)
++{
++	static const char* const names[3] = { "ロードブロックＡ", "ロードブロックＢ",
++		                                  "ロードブロックＣ" };
++	if (size < 4)
++		return -1;
++	s32 len = (body[2] << 8) | body[3];
++	if (4 + len + 12 > size)
++		return -1;
++	*posOffset = 4 + len;
++	for (int i = 0; i < 3; ++i)
++		if ((s32)strlen(names[i]) == len && memcmp(body + 4, names[i], len) == 0)
++			return i;
++	return -1;
++}
++
++struct PortPendingBlock {
++	TFileLoadBlock* block;
++	u8* body;
++	s32 size;
++	s32 posOffset;
++};
++PortPendingBlock s_portPending[2]; // A and B, waiting for C
++
++void portLoadAt(TFileLoadBlock* block, const u8* body, s32 size, s32 posOffset,
++                const JGeometry::TVec3<f32>& pos)
++{
++	u8* copy = (u8*)malloc(size);
++	if (copy == nullptr)
++		return;
++	memcpy(copy, body, size);
++	portPutBE32(copy + posOffset + 0, pos.x);
++	portPutBE32(copy + posOffset + 4, pos.y);
++	portPutBE32(copy + posOffset + 8, pos.z);
++	JSUMemoryInputStream copyStream(copy, size);
++	s_portMakingDebugBlock = true;
++	block->TMapObjBase::load(copyStream);
++	s_portMakingDebugBlock = false;
++	free(copy); // load copied what it keeps (strings are read into new memory)
++}
++
++void portFlushPending()
++{
++	for (int i = 0; i < 2; ++i) {
++		PortPendingBlock& p = s_portPending[i];
++		if (p.block != nullptr) {
++			JSUMemoryInputStream in(p.body, p.size);
++			s_portMakingDebugBlock = true;
++			p.block->TMapObjBase::load(in);
++			s_portMakingDebugBlock = false;
++		}
++		free(p.body);
++		p.block = nullptr;
++		p.body  = nullptr;
++	}
++}
++
++JGeometry::TVec3<f32> portBodyPos(const u8* body, s32 posOffset)
++{
++	return JGeometry::TVec3<f32>(portGetBE32(body + posOffset),
++	                             portGetBE32(body + posOffset + 4),
++	                             portGetBE32(body + posOffset + 8));
++}
++
++// ---- the D block's own texture ----------------------------------------
++
++// RGB5A3, big-endian as the disc's texels are: opaque 1rrrrrgggggbbbbb.
++u16 portRGB5A3(u8 r, u8 g, u8 b) { return 0x8000 | ((r >> 3) << 10) | ((g >> 3) << 5) | (b >> 3); }
 +
 +// a 5 x 7 "D", top row first
 +const char* const kPortGlyphD[7] = {
 +	"1111.", "1...1", "1...1", "1...1", "1...1", "1...1", "1111.",
 +};
++
++// The colour of texel (x, y) of a w x h "D" face: purple, a white D with a
++// dark edge round it, a darker border.
++u16 portDTexel(int x, int y, int w, int h)
++{
++	const u16 purple = portRGB5A3(0x5a, 0x2a, 0x9a);
++	const u16 border = portRGB5A3(0x30, 0x14, 0x58);
++	const u16 white  = portRGB5A3(0xff, 0xff, 0xff);
++	const u16 edge   = portRGB5A3(0x20, 0x08, 0x40);
++	int b = (w < h ? w : h) / 16;
++	if (b < 1)
++		b = 1;
++	if (x < b || y < b || x >= w - b || y >= h - b)
++		return border;
++	// the glyph fills the middle 60% of the height
++	f32 gh = h * 0.6f, gw = gh * 5.0f / 7.0f;
++	f32 gx = (x + 0.5f - (w - gw) * 0.5f) / gw * 5.0f;
++	f32 gy = (y + 0.5f - (h - gh) * 0.5f) / gh * 7.0f;
++	bool on = false, near = false;
++	for (int dy = -1; dy <= 1; ++dy)
++		for (int dx = -1; dx <= 1; ++dx) {
++			f32 sx = gx + dx * 0.18f, sy = gy + dy * 0.18f;
++			int cx = (int)(sx >= 0 ? sx : -1), cy = (int)(sy >= 0 ? sy : -1);
++			bool hit = cx >= 0 && cx < 5 && cy >= 0 && cy < 7 && kPortGlyphD[cy][cx] == '1';
++			if (dx == 0 && dy == 0)
++				on = hit;
++			else if (hit)
++				near = true;
++		}
++	if (on)
++		return white;
++	if (near)
++		return edge;
++	return purple;
++}
++
++// Size in bytes of a texture's image (mipmaps included) and palette.
++u32 portTexBytes(const ResTIMG* t)
++{
++	u32 n = GXGetTexBufferSize(t->width, t->height, t->format, t->mipmapEnabled ? GX_TRUE : GX_FALSE,
++	                           t->mipmapEnabled ? t->mipmapCount : 1);
++	return (n + 31) & ~31u;
++}
++
++bool s_portFaceTextured = false;
++
++// Give the D block its own copy of block A's model, and in it a D in place
++// of the letter: the texture that differs between A's model and B's.
++void portGiveDebugBlockItsTexture(TFileLoadBlock* d, TFileLoadBlock* b)
++{
++	s_portFaceTextured = false;
++	if (d->getMActor() == nullptr || b == nullptr || b->getModel() == nullptr)
++		return;
++	TMActorKeeper* keeper = d->getActorKeeper();
++	if (keeper == nullptr || keeper->getModelDataKeeper() == nullptr)
++		return;
++
++	// the model file A's (and so D's) MActor was made from
++	const TMapObjData* od = d->getMapObjData();
++	char name[64];
++	if (od->mAnim != nullptr)
++		snprintf(name, sizeof name, "%s", od->mAnim->unk4[0].unk0);
++	else
++		snprintf(name, sizeof name, "%s.bmd", od->unk0);
++	char path[128];
++	snprintf(path, sizeof path, "%s/%s", keeper->getModelDataKeeper()->getFolder(), name);
++	void* res = JKRGetResource(path);
++	if (res == nullptr) {
++		OSReport("debug block: no model %s\n", path);
++		return;
++	}
++	J3DModelData* data = J3DModelLoaderDataBase::load(res, keeper->mModelLoaderFlags);
++	J3DTexture* tex    = data != nullptr ? data->getTexture() : nullptr;
++	J3DTexture* texB   = b->getModel()->getModelData()->getTexture();
++	if (tex == nullptr || texB == nullptr || tex->getNum() == 0) {
++		OSReport("debug block: model %s has no textures\n", path);
++		return;
++	}
++
++	// the letter: the first texture whose texels differ from B's
++	int letter = -1;
++	for (u16 i = 0; i < tex->getNum() && i < texB->getNum() && letter < 0; ++i) {
++		const ResTIMG* ta = tex->getResTIMG(i);
++		const ResTIMG* tb = texB->getResTIMG(i);
++		if (ta->width != tb->width || ta->height != tb->height || ta->format != tb->format) {
++			letter = i;
++			break;
++		}
++		u32 bytes = GXGetTexBufferSize(ta->width, ta->height, ta->format, GX_FALSE, 1);
++		if (memcmp((const u8*)ta + ta->imageDataOffset, (const u8*)tb + tb->imageDataOffset,
++		           bytes) != 0)
++			letter = i;
++	}
++	if (letter < 0) {
++		OSReport("debug block: no letter texture found\n");
++		return;
++	}
++
++	// One block, header table first, so every image offset stays positive:
++	// copies of the other textures' images and palettes, then the D.
++	const u16 num = tex->getNum();
++	const ResTIMG* lt = tex->getResTIMG(letter);
++	u16 w = lt->width, h = lt->height;
++	u32 total = 0x20 * num;
++	for (u16 i = 0; i < num; ++i) {
++		const ResTIMG* t = tex->getResTIMG(i);
++		if (i == letter)
++			total += ((u32)w * h * 2 + 31) & ~31u;
++		else
++			total += portTexBytes(t) + (((u32)t->numColors * 2 + 31) & ~31u);
++	}
++	u8* blk = new (0x20) u8[total];
++	if (blk == nullptr)
++		return;
++	ResTIMG* hdr = (ResTIMG*)blk;
++	u32 at       = 0x20 * num;
++	for (u16 i = 0; i < num; ++i) {
++		const ResTIMG* t = tex->getResTIMG(i);
++		hdr[i]           = *t;
++		u8* self         = (u8*)&hdr[i];
++		if (i == letter) {
++			ResTIMG& n       = hdr[i];
++			n.format         = GX_TF_RGB5A3;
++			n.alphaEnabled   = 0;
++			n.isIndexTexture = 0;
++			n.colorFormat    = 0;
++			n.numColors      = 0;
++			n.paletteOffset  = 0;
++			n.mipmapEnabled  = 0;
++			n.mipmapCount    = 1;
++			n.minLod         = 0;
++			n.maxLod         = 0;
++			n.minFilter      = GX_LINEAR;
++			n.magFilter      = GX_LINEAR;
++			n.imageDataOffset = (u32)(blk + at - self);
++			// 4 x 4 tiles, rows of tiles, each tile row-major
++			u8* out = blk + at;
++			for (int ty = 0; ty < h; ty += 4)
++				for (int tx = 0; tx < w; tx += 4)
++					for (int y = ty; y < ty + 4; ++y)
++						for (int x = tx; x < tx + 4; ++x) {
++							u16 c  = portDTexel(x, y, w, h);
++							*out++ = (u8)(c >> 8);
++							*out++ = (u8)c;
++						}
++			at += ((u32)w * h * 2 + 31) & ~31u;
++		} else {
++			u32 bytes = portTexBytes(t);
++			memcpy(blk + at, (const u8*)t + t->imageDataOffset, bytes);
++			hdr[i].imageDataOffset = (u32)(blk + at - self);
++			at += bytes;
++			if (t->numColors != 0) {
++				u32 pb = (u32)t->numColors * 2;
++				memcpy(blk + at, (const u8*)t + t->paletteOffset, pb);
++				hdr[i].paletteOffset = (u32)(blk + at - self);
++				at += (pb + 31) & ~31u;
++			}
++		}
++	}
++	data->setTexture(new J3DTexture(num, hdr));
++
++	// the D block draws this model from now on
++	u32 flags       = d->getSDLModelFlag();
++	SDLModel* model = new SDLModel(new SDLModelData(data), flags, 1);
++	d->getMActor()->setModel(model, flags);
++	d->getMActor()->calc();
++	s_portFaceTextured = true;
++	OSReport("debug block: own model %s, texture %d of %d is the D (%dx%d)\n", path, letter,
++	         num, w, h);
++}
++
++} // namespace
++
++// The file blocks load A, B, C in turn. A and B wait for C: then all three
++// are laid out again -- moved left by 15% of the A-C span and closed up so
++// that a fourth, the D block (a copy of A), stands where C was.
++void TFileLoadBlock::load(JSUMemoryInputStream& stream)
++{
++	const u8* body = (const u8*)stream.mBuffer + stream.mPosition;
++	const s32 size = stream.mLength - stream.mPosition;
++
++	if (s_portMakingDebugBlock) {
++		TMapObjBase::load(stream);
++		return;
++	}
++
++	s32 posOffset = 0;
++	int idx       = portFileBlockIndex(body, size, &posOffset);
++	if (idx == 0 || idx == 1) {
++		if (idx == 0) {
++			portFlushPending(); // a new scene
++			s_portDebugBlock = nullptr;
++			s_portDebugAfter = nullptr;
++		}
++		PortPendingBlock& p = s_portPending[idx];
++		free(p.body);
++		p.body = (u8*)malloc(size);
++		if (p.body == nullptr) {
++			p.block = nullptr;
++			TMapObjBase::load(stream);
++			return;
++		}
++		memcpy(p.body, body, size);
++		p.size      = size;
++		p.posOffset = posOffset;
++		p.block     = this;
++		return; // loaded with C
++	}
++	if (idx != 2 || s_portPending[0].block == nullptr || s_portPending[1].block == nullptr) {
++		portFlushPending();
++		TMapObjBase::load(stream);
++		return;
++	}
++
++	PortPendingBlock& pa = s_portPending[0];
++	PortPendingBlock& pb = s_portPending[1];
++	JGeometry::TVec3<f32> a0 = portBodyPos(pa.body, pa.posOffset);
++	JGeometry::TVec3<f32> c0 = portBodyPos(body, posOffset);
++	JGeometry::TVec3<f32> span(c0.x - a0.x, c0.y - a0.y, c0.z - a0.z);
++	JGeometry::TVec3<f32> a1(a0.x - span.x * 0.15f, a0.y - span.y * 0.15f,
++	                         a0.z - span.z * 0.15f);
++	JGeometry::TVec3<f32> step((c0.x - a1.x) / 3.0f, (c0.y - a1.y) / 3.0f,
++	                           (c0.z - a1.z) / 3.0f);
++	JGeometry::TVec3<f32> b1(a1.x + step.x, a1.y + step.y, a1.z + step.z);
++	JGeometry::TVec3<f32> c1(a1.x + step.x * 2, a1.y + step.y * 2, a1.z + step.z * 2);
++
++	TFileLoadBlock* blockA = pa.block;
++	TFileLoadBlock* blockB = pb.block;
++	portLoadAt(blockA, pa.body, pa.size, pa.posOffset, a1);
++	portLoadAt(blockB, pb.body, pb.size, pb.posOffset, b1);
++	portLoadAt(this, body, size, posOffset, c1);
++
++	// the D block, from A's entry, where C was
++	TFileLoadBlock* block = new TFileLoadBlock;
++	portLoadAt(block, pa.body, pa.size, pa.posOffset, c0);
++	portGiveDebugBlockItsTexture(block, blockB);
++
++	for (int i = 0; i < 2; ++i) {
++		free(s_portPending[i].body);
++		s_portPending[i].body  = nullptr;
++		s_portPending[i].block = nullptr;
++	}
++	s_portDebugBlock = block;
++	s_portDebugAfter = this;
++}
++
++namespace {
 +
 +void portFaceVertex(const f32 c[3], const f32 r[3], const f32 u[3], f32 a,
 +                    f32 b, u8 cr, u8 cg, u8 cb)
@@ -464,8 +816,8 @@ Reason: mod: a DEBUG file-select block right of C (a copy of block A's scene ent
 +		return;
 +	if (cue & CUE_MOVE)
 +		portDebugBlockHeadCheck(this);
-+	if (!(cue & CUE_DRAW))
-+		return;
++	if (!(cue & CUE_DRAW) || s_portFaceTextured)
++		return; // the overlay is only a fallback for a missing texture
 +
 +	f32 lo[3], hi[3];
 +	portBlockBox(this, lo, hi);
@@ -546,7 +898,7 @@ Reason: mod: a DEBUG file-select block right of C (a copy of block A's scene ent
  // TODO: UNUSED at 0x38 in the map, the same size as makeBlockNormal and
  // makeBlockRock, so the body is a startAnim/mState pair; which animation index
  // and which state value is a guess, continuing those two functions' pattern
-@@ -32,6 +308,11 @@
+@@ -32,6 +579,11 @@
  {
  	startAnim(0);
  	mState = STATE_NORMAL;
@@ -558,7 +910,7 @@ Reason: mod: a DEBUG file-select block right of C (a copy of block A's scene ent
  }
  
  void TFileLoadBlock::makeBlockRock()
-@@ -59,6 +340,14 @@
+@@ -59,6 +611,14 @@
  void TFileLoadBlock::pushed()
  {
  	startBck("fileloadblock");
@@ -573,7 +925,7 @@ Reason: mod: a DEBUG file-select block right of C (a copy of block A's scene ent
  	gpCardLoad->setSelected(unk138);
  	SMSRumbleMgr->start(0x15, sRumbleTime, (float*)nullptr);
  	gpMarioParticleManager->emit(MAP_MAP_MS_M_FILEBLOCK, &unk144, 0, nullptr);
-@@ -71,12 +360,22 @@
+@@ -71,12 +631,22 @@
  
  void TFileLoadBlock::touchPlayer(THitActor* param_1)
  {
