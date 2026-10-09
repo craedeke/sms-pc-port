@@ -1,4 +1,4 @@
-Reason: mod: a fourth file-select block left of A (a copy of block A's scene entry) loads file A into the test level (test11) for testing movement
+Reason: mod: a fourth file-select block right of C (a copy of block A's scene entry) loads file A into the whitebox test level (test11 rebuilt by zzzz-mod-05) for testing movement
 --- a/include/MoveBG/MapObjOption.hpp
 +++ b/include/MoveBG/MapObjOption.hpp
 @@ -5,6 +5,10 @@
@@ -23,7 +23,7 @@ Reason: mod: a fourth file-select block left of A (a copy of block A's scene ent
 +class TNameRef;
 +}
 +// Mod (MapObjOption.cpp): a sibling to add to the scene after `loaded`, or
-+// null. This is how the debug block joins its group next to block B.
++// null. This is how the debug block joins its group next to block C.
 +extern "C" JDrama::TNameRef* port_take_extra_scene_child(JDrama::TNameRef* loaded);
 +#endif
 +
@@ -43,7 +43,7 @@ Reason: mod: a fourth file-select block left of A (a copy of block A's scene ent
  }
 --- a/src/GC2D/CardLoad.cpp
 +++ b/src/GC2D/CardLoad.cpp
-@@ -2320,6 +2320,43 @@
+@@ -2320,6 +2320,50 @@
  	}
  }
  #ifdef TARGET_PC
@@ -51,10 +51,15 @@ Reason: mod: a fourth file-select block left of A (a copy of block A's scene ent
 +#include <Strategic/NameRefAry.hpp>
 +#include <System/ScenarioArchiveName.hpp>
 +
-+// Mod: the debug block left of A (MapObjOption.cpp) loads file A into the
++// Mod: the debug block right of C (MapObjOption.cpp) loads file A into the
 +// test level, the stage whose scene archive is test11 (a developer test map
 +// left on the disc).
 +extern "C" int port_debug_level_requested;
++// the test level's stage and scenario, for Map.cpp to know it is there
++extern "C" int port_debug_level_stage;
++extern "C" int port_debug_level_scenario;
++int port_debug_level_stage    = -1;
++int port_debug_level_scenario = 0;
 +
 +static void port_debug_level_warp()
 +{
@@ -75,6 +80,8 @@ Reason: mod: a fourth file-select block left of A (a copy of block A's scene ent
 +			const char* arc = scenarios->getChildren()[sc].mArcName;
 +			if (arc != nullptr && strstr(arc, "test11") != nullptr) {
 +				gpApplication.mNextArea.set(stage, sc, 0);
++				port_debug_level_stage    = (int)stage;
++				port_debug_level_scenario = (int)sc;
 +				OSReport("debug block: test level, stage %u scenario %u (%s)\n",
 +				         stage, sc, arc);
 +				return;
@@ -87,7 +94,7 @@ Reason: mod: a fourth file-select block left of A (a copy of block A's scene ent
  // port: SMS_WARP=stage,scenario[,shines] sends a file-select load to another
  // area (debugging; 1,0,1 is Delfino Plaza as it is after the airstrip).
  static void port_warp_after_file_select()
-@@ -2838,6 +2875,7 @@
+@@ -2838,6 +2882,7 @@
  			gpMarDirector->setNextStage(1, nullptr);
  #ifdef TARGET_PC
  		port_warp_after_file_select();
@@ -97,7 +104,7 @@ Reason: mod: a fourth file-select block left of A (a copy of block A's scene ent
  	} break;
 --- a/src/MoveBG/MapObjOption.cpp
 +++ b/src/MoveBG/MapObjOption.cpp
-@@ -17,6 +17,101 @@
+@@ -17,6 +17,109 @@
  // 234 bytes of .rodata order.
  #include <Map/MapCollisionEntry.hpp>
  
@@ -106,9 +113,9 @@ Reason: mod: a fourth file-select block left of A (a copy of block A's scene ent
 +#include <string.h>
 +#include <JSystem/JSupport/JSUMemoryInputStream.hpp>
 +
-+// Mod: a fourth file block, left of A, that loads file A into the debug test
-+// level (CardLoad.cpp). It is a copy of block A's scene entry placed as far
-+// left of A as B is right of it, made when B loads and added to B's group.
++// Mod: a fourth file block, right of C, that loads file A into the whitebox
++// test level (CardLoad.cpp, Map.cpp). It is a copy of block A's scene entry placed as far
++// right of C as C is right of B, made when C loads and added to C's group.
 +extern "C" int port_debug_level_requested;
 +int port_debug_level_requested = 0;
 +
@@ -116,7 +123,8 @@ Reason: mod: a fourth file-select block left of A (a copy of block A's scene ent
 +
 +u8* s_portBlockABody     = nullptr; // block A's entry, from its name on
 +s32 s_portBlockABodySize = 0;
-+JGeometry::TVec3<f32> s_portBlockAPos;
++JGeometry::TVec3<f32> s_portBlockBPos;
++bool s_portHaveBlockBPos = false;
 +TFileLoadBlock* s_portDebugBlock     = nullptr;
 +JDrama::TNameRef* s_portDebugAfter   = nullptr;
 +bool s_portMakingDebugBlock          = false;
@@ -158,13 +166,20 @@ Reason: mod: a fourth file-select block left of A (a copy of block A's scene ent
 +		s_portBlockABodySize = s_portBlockABody ? size : 0;
 +		if (s_portBlockABody)
 +			memcpy(s_portBlockABody, body, size);
-+		s_portBlockAPos  = mPosition;
-+		s_portDebugBlock = nullptr;
++		s_portHaveBlockBPos = false;
++		s_portDebugBlock    = nullptr;
 +		s_portDebugAfter = nullptr;
 +		return;
 +	}
 +
-+	if (unk138 != 1 || s_portBlockABody == nullptr || s_portBlockABodySize < 4)
++	if (unk138 == 1) {
++		s_portBlockBPos     = mPosition;
++		s_portHaveBlockBPos = true;
++		return;
++	}
++
++	if (unk138 != 2 || !s_portHaveBlockBPos || s_portBlockABody == nullptr
++	    || s_portBlockABodySize < 4)
 +		return;
 +
 +	// The entry starts with the key (u16) and name (u16 length + bytes), then
@@ -179,10 +194,10 @@ Reason: mod: a fourth file-select block left of A (a copy of block A's scene ent
 +	if (copy == nullptr)
 +		return;
 +	memcpy(copy, s_portBlockABody, s_portBlockABodySize);
-+	// as far left of A as B is right of it
-+	portPutBE32(copy + posOffset + 0, s_portBlockAPos.x * 2.0f - mPosition.x);
-+	portPutBE32(copy + posOffset + 4, s_portBlockAPos.y * 2.0f - mPosition.y);
-+	portPutBE32(copy + posOffset + 8, s_portBlockAPos.z * 2.0f - mPosition.z);
++	// as far right of C as C is right of B
++	portPutBE32(copy + posOffset + 0, mPosition.x * 2.0f - s_portBlockBPos.x);
++	portPutBE32(copy + posOffset + 4, mPosition.y * 2.0f - s_portBlockBPos.y);
++	portPutBE32(copy + posOffset + 8, mPosition.z * 2.0f - s_portBlockBPos.z);
 +
 +	TFileLoadBlock* block = new TFileLoadBlock;
 +	JSUMemoryInputStream copyStream(copy, s_portBlockABodySize);
@@ -199,7 +214,7 @@ Reason: mod: a fourth file-select block left of A (a copy of block A's scene ent
  // TODO: UNUSED at 0x38 in the map, the same size as makeBlockNormal and
  // makeBlockRock, so the body is a startAnim/mState pair; which animation index
  // and which state value is a guess, continuing those two functions' pattern
-@@ -58,6 +153,10 @@
+@@ -58,6 +161,10 @@
  // the same two frames, but nothing here names such an object.
  void TFileLoadBlock::pushed()
  {

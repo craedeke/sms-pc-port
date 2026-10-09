@@ -1,0 +1,454 @@
+Reason: mod: the whitebox test level: in the debug block's stage the terrain is hidden and its collision replaced by drawn, solid test shapes (floor, stairs, ramps, walls, wall-kick corridor, ledges, hill); other actors are switched off
+--- a/src/Map/Map.cpp
++++ b/src/Map/Map.cpp
+@@ -112,6 +112,346 @@
+ 
+ } // namespace
+ #endif
++
++#ifdef TARGET_PC
++#include <dolphin/gx.h>
++#include <JSystem/J3D/J3DGraphBase/J3DSys.hpp>
++#include <System/Application.hpp>
++#include <new>
++#include <math.h>
++
++// Mod: the whitebox test level. The debug block on the file-select screen
++// (MapObjOption.cpp / CardLoad.cpp) loads the test11 stage; there the stage's
++// own terrain is hidden (MapModel.cpp) and its collision replaced by simple
++// shapes built here -- a checker floor, stairs, ramps, walls, a wall-kick
++// corridor, ledges and a hill -- every one of them drawn and solid, from the
++// same triangles. Other actors are switched off (Strategy.cpp).
++extern "C" int port_debug_level_stage;
++extern "C" int port_debug_level_scenario;
++
++extern "C" int port_in_debug_level()
++{
++	return port_debug_level_stage >= 0
++	    && gpApplication.mCurrArea.getStage() == (u8)port_debug_level_stage
++	    && gpApplication.mCurrArea.getScenario()
++	           == (u8)port_debug_level_scenario;
++}
++
++namespace {
++
++struct PortWbTri {
++	JGeometry::TVec3<f32> p[3];
++	u8 r, g, b;
++};
++
++const int kPortWbMaxTris = 4096;
++PortWbTri s_portWbTris[kPortWbMaxTris];
++int s_portWbTriNum = 0;    // built
++int s_portWbSolidNum = 0;  // added to the collision grid (and drawn)
++TBGCheckData* s_portWbChecks = nullptr;
++const TBGCheckListRoot* s_portWbRootsFor = nullptr;
++f32 s_portWbScale = 1.0f; // X/Z, if the stage's grid is smaller than the layout
++
++void portWbTri(const JGeometry::TVec3<f32>& a, const JGeometry::TVec3<f32>& b,
++               const JGeometry::TVec3<f32>& c, f32 nx, f32 ny, f32 nz, u32 rgb)
++{
++	if (s_portWbTriNum >= kPortWbMaxTris)
++		return;
++	// TBGCheckData::setVertex's normal is (b - a) x (c - b): face it outward
++	f32 ux = b.x - a.x, uy = b.y - a.y, uz = b.z - a.z;
++	f32 vx = c.x - b.x, vy = c.y - b.y, vz = c.z - b.z;
++	f32 cx = uy * vz - uz * vy, cy = uz * vx - ux * vz, cz = ux * vy - uy * vx;
++	PortWbTri& t = s_portWbTris[s_portWbTriNum++];
++	t.p[0] = a;
++	if (cx * nx + cy * ny + cz * nz >= 0.0f) {
++		t.p[1] = b;
++		t.p[2] = c;
++	} else {
++		t.p[1] = c;
++		t.p[2] = b;
++	}
++	// light from above and to one side, so faces read apart
++	f32 len = sqrtf(nx * nx + ny * ny + nz * nz);
++	f32 lit = len > 0.0f ? (nx * 0.35f + ny * 0.85f + nz * 0.4f) / len : 0.0f;
++	if (lit < 0.0f)
++		lit = 0.0f;
++	f32 k = 0.5f + 0.5f * lit;
++	t.r   = (u8)(((rgb >> 16) & 0xff) * k);
++	t.g   = (u8)(((rgb >> 8) & 0xff) * k);
++	t.b   = (u8)((rgb & 0xff) * k);
++}
++
++JGeometry::TVec3<f32> portWbV(f32 x, f32 y, f32 z)
++{
++	return JGeometry::TVec3<f32>(x * s_portWbScale, y, z * s_portWbScale);
++}
++
++// a quad a-b-c-d (in order around it) facing (nx, ny, nz)
++void portWbQuad(const JGeometry::TVec3<f32>& a, const JGeometry::TVec3<f32>& b,
++                const JGeometry::TVec3<f32>& c, const JGeometry::TVec3<f32>& d,
++                f32 nx, f32 ny, f32 nz, u32 rgb)
++{
++	portWbTri(a, b, c, nx, ny, nz, rgb);
++	portWbTri(a, c, d, nx, ny, nz, rgb);
++}
++
++// an axis-aligned box standing on y0 (no bottom face)
++void portWbBox(f32 x0, f32 x1, f32 y0, f32 y1, f32 z0, f32 z1, u32 rgb)
++{
++	portWbQuad(portWbV(x0, y1, z0), portWbV(x1, y1, z0), portWbV(x1, y1, z1),
++	           portWbV(x0, y1, z1), 0, 1, 0, rgb);
++	portWbQuad(portWbV(x0, y0, z0), portWbV(x1, y0, z0), portWbV(x1, y1, z0),
++	           portWbV(x0, y1, z0), 0, 0, -1, rgb);
++	portWbQuad(portWbV(x0, y0, z1), portWbV(x1, y0, z1), portWbV(x1, y1, z1),
++	           portWbV(x0, y1, z1), 0, 0, 1, rgb);
++	portWbQuad(portWbV(x0, y0, z0), portWbV(x0, y0, z1), portWbV(x0, y1, z1),
++	           portWbV(x0, y1, z0), -1, 0, 0, rgb);
++	portWbQuad(portWbV(x1, y0, z0), portWbV(x1, y0, z1), portWbV(x1, y1, z1),
++	           portWbV(x1, y1, z0), 1, 0, 0, rgb);
++}
++
++// steps rising toward +z from zs: each `rise` high and `run` deep
++void portWbStairs(f32 x0, f32 x1, f32 zs, int steps, f32 rise, f32 run,
++                  u32 rgb)
++{
++	for (int i = 0; i < steps; ++i) {
++		f32 za = zs + i * run, zb = za + run;
++		f32 yb = (i + 1) * rise, ya = i * rise;
++		u32 c = (i & 1) ? rgb : (rgb & 0xfefefe) >> 1 | 0x404040;
++		portWbQuad(portWbV(x0, yb, za), portWbV(x1, yb, za), portWbV(x1, yb, zb),
++		           portWbV(x0, yb, zb), 0, 1, 0, c); // tread
++		portWbQuad(portWbV(x0, ya, za), portWbV(x1, ya, za), portWbV(x1, yb, za),
++		           portWbV(x0, yb, za), 0, 0, -1, c); // riser
++		portWbQuad(portWbV(x0, 0, za), portWbV(x0, 0, zb), portWbV(x0, yb, zb),
++		           portWbV(x0, yb, za), -1, 0, 0, rgb); // sides
++		portWbQuad(portWbV(x1, 0, za), portWbV(x1, 0, zb), portWbV(x1, yb, zb),
++		           portWbV(x1, yb, za), 1, 0, 0, rgb);
++	}
++	f32 ze = zs + steps * run, ye = steps * rise;
++	portWbQuad(portWbV(x0, 0, ze), portWbV(x1, 0, ze), portWbV(x1, ye, ze),
++	           portWbV(x0, ye, ze), 0, 0, 1, rgb); // back
++}
++
++// a ramp rising toward -z from z0, `degrees` steep, `len` long
++void portWbRamp(f32 x0, f32 x1, f32 z0, f32 len, f32 degrees, u32 rgb)
++{
++	f32 h  = len * tanf(degrees * 3.14159265f / 180.0f);
++	f32 z1 = z0 - len;
++	// the slope's outward normal points up and toward +z
++	portWbQuad(portWbV(x0, 0, z0), portWbV(x1, 0, z0), portWbV(x1, h, z1),
++	           portWbV(x0, h, z1), 0, len, h, rgb);
++	portWbQuad(portWbV(x0, 0, z1), portWbV(x1, 0, z1), portWbV(x1, h, z1),
++	           portWbV(x0, h, z1), 0, 0, -1, rgb); // back wall
++	portWbTri(portWbV(x0, 0, z0), portWbV(x0, 0, z1), portWbV(x0, h, z1), -1, 0,
++	          0, rgb);
++	portWbTri(portWbV(x1, 0, z0), portWbV(x1, 0, z1), portWbV(x1, h, z1), 1, 0,
++	          0, rgb);
++}
++
++f32 portWbHillY(f32 x, f32 z, f32 cx, f32 cz, f32 radius, f32 height)
++{
++	f32 dx = x - cx, dz = z - cz;
++	f32 r  = sqrtf(dx * dx + dz * dz);
++	if (r >= radius)
++		return 0.0f;
++	f32 c = cosf(r / radius * 3.14159265f * 0.5f);
++	return height * c * c;
++}
++
++// a smooth round hill on an n x n grid
++void portWbHill(f32 cx, f32 cz, f32 radius, f32 height, int n, u32 rgb)
++{
++	f32 step = radius * 2.0f / n;
++	for (int i = 0; i < n; ++i) {
++		for (int j = 0; j < n; ++j) {
++			f32 xa = cx - radius + i * step, xb = xa + step;
++			f32 za = cz - radius + j * step, zb = za + step;
++			f32 y00 = portWbHillY(xa, za, cx, cz, radius, height);
++			f32 y10 = portWbHillY(xb, za, cx, cz, radius, height);
++			f32 y11 = portWbHillY(xb, zb, cx, cz, radius, height);
++			f32 y01 = portWbHillY(xa, zb, cx, cz, radius, height);
++			if (y00 == 0.0f && y10 == 0.0f && y11 == 0.0f && y01 == 0.0f)
++				continue; // flat: the floor is already there
++			// outward normal of each half from its cross product (up)
++			u32 c = ((i + j) & 1) ? rgb : (rgb & 0xfefefe) >> 1 | 0x303030;
++			portWbTri(portWbV(xa, y00, za), portWbV(xa, y01, zb),
++			          portWbV(xb, y11, zb), 0, 1, 0, c);
++			portWbTri(portWbV(xa, y00, za), portWbV(xb, y11, zb),
++			          portWbV(xb, y10, za), 0, 1, 0, c);
++		}
++	}
++}
++
++void portWbBuild()
++{
++	s_portWbTriNum = 0;
++	const f32 half = 4000.0f;
++
++	// floor: a 500-unit checker, so speed and distance can be read off it
++	for (int i = 0; i < 16; ++i)
++		for (int j = 0; j < 16; ++j) {
++			f32 x0 = -half + i * 500.0f, z0 = -half + j * 500.0f;
++			u32 c = ((i + j) & 1) ? 0xb4b4b4 : 0x8c8c8c;
++			if (i == 8 && j == 8)
++				c = 0xd8c060; // the spawn tile
++			portWbQuad(portWbV(x0, 0, z0), portWbV(x0 + 500, 0, z0),
++			           portWbV(x0 + 500, 0, z0 + 500),
++			           portWbV(x0, 0, z0 + 500), 0, 1, 0, c);
++		}
++
++	// west: stairs rising north, low/medium/tall steps
++	portWbStairs(-3700, -3200, -1200, 12, 25, 100, 0xe08a3c);
++	portWbStairs(-3000, -2500, -1200, 8, 60, 150, 0xd06a2c);
++	portWbStairs(-2300, -1800, -1200, 6, 100, 200, 0xb04a20);
++
++	// south: ramps of 10, 20, 30, 40 and 50 degrees, rising south
++	static const f32 angles[5] = { 10, 20, 30, 40, 50 };
++	for (int k = 0; k < 5; ++k) {
++		f32 x0 = -2200.0f + k * 700.0f;
++		portWbRamp(x0, x0 + 500, -1700, 1200, angles[k], 0x5fae5f);
++	}
++
++	// north: walls 100, 200, 350, 500 and 800 high
++	static const f32 wallH[5] = { 100, 200, 350, 500, 800 };
++	for (int k = 0; k < 5; ++k) {
++		f32 x0 = -2200.0f + k * 700.0f;
++		portWbBox(x0, x0 + 500, 0, wallH[k], 2000, 2100, 0x5f7fd0);
++	}
++	// north-east: a wall-kick corridor (300 wide) and a tall tower
++	portWbBox(1600, 1700, 0, 2500, 2400, 3700, 0x4060b0);
++	portWbBox(2000, 2100, 0, 2500, 2400, 3700, 0x4060b0);
++	portWbBox(2600, 3200, 0, 1500, 2600, 3200, 0x7050b0);
++	// north-west: ledges to grab, 250 and 400 high
++	portWbBox(-3600, -3100, 0, 250, 2400, 2900, 0x9a6ad0);
++	portWbBox(-2900, -2400, 0, 400, 2400, 2900, 0x9a6ad0);
++
++	// east: a round hill
++	portWbHill(2800, 0, 900, 400, 12, 0x3fa0a0);
++
++	// a fence round the edge, 1200 high, facing in
++	for (int i = 0; i < 8; ++i) {
++		f32 a = -half + i * 1000.0f, b = a + 1000.0f;
++		portWbQuad(portWbV(a, 0, -half), portWbV(b, 0, -half),
++		           portWbV(b, 1200, -half), portWbV(a, 1200, -half), 0, 0, 1,
++		           0x606070);
++		portWbQuad(portWbV(a, 0, half), portWbV(b, 0, half),
++		           portWbV(b, 1200, half), portWbV(a, 1200, half), 0, 0, -1,
++		           0x606070);
++		portWbQuad(portWbV(-half, 0, a), portWbV(-half, 0, b),
++		           portWbV(-half, 1200, b), portWbV(-half, 1200, a), 1, 0, 0,
++		           0x606070);
++		portWbQuad(portWbV(half, 0, a), portWbV(half, 0, b),
++		           portWbV(half, 1200, b), portWbV(half, 1200, a), -1, 0, 0,
++		           0x606070);
++	}
++}
++
++// Replace the stage's static collision with the whitebox's, once per load.
++void portWbSetup()
++{
++	TMapCollisionData* col = gpMapCollisionData;
++	if (col == nullptr || col->unk14 == nullptr
++	    || s_portWbRootsFor == col->unk14)
++		return;
++	s_portWbRootsFor = col->unk14;
++
++	// keep the layout inside the stage's collision grid
++	f32 room = col->mGridExtentX < col->mGridExtentY ? col->mGridExtentX
++	                                                 : col->mGridExtentY;
++	s_portWbScale = (room - 64.0f) / 4000.0f;
++	if (s_portWbScale > 1.0f)
++		s_portWbScale = 1.0f;
++	portWbBuild();
++
++	if (s_portWbChecks == nullptr)
++		s_portWbChecks = (TBGCheckData*)malloc(sizeof(TBGCheckData)
++		                                       * kPortWbMaxTris);
++	if (s_portWbChecks == nullptr)
++		return;
++
++	// drop the stage's own static collision (terrain and placed objects)
++	col->initGrid(col->unk14);
++	col->unk38 = 0;
++
++	// add ours while the shared list pool has room, leaving a quarter of it
++	// for moving collision
++	const u32 limit = col->unk20 - col->unk20 / 4;
++	s_portWbSolidNum = 0;
++	for (int i = 0; i < s_portWbTriNum; ++i) {
++		const PortWbTri& t = s_portWbTris[i];
++		f32 minX = t.p[0].x, maxX = t.p[0].x, minZ = t.p[0].z, maxZ = t.p[0].z;
++		for (int k = 1; k < 3; ++k) {
++			if (t.p[k].x < minX) minX = t.p[k].x;
++			if (t.p[k].x > maxX) maxX = t.p[k].x;
++			if (t.p[k].z < minZ) minZ = t.p[k].z;
++			if (t.p[k].z > maxZ) maxZ = t.p[k].z;
++		}
++		u32 cells = (u32)((maxX - minX) / 1024.0f + 2) * (u32)((maxZ - minZ) / 1024.0f + 2);
++		if (col->unk38 + cells > limit) {
++			OSReport("whitebox: collision pool full at %d of %d triangles\n",
++			         i, s_portWbTriNum);
++			break;
++		}
++		TBGCheckData* d = new (&s_portWbChecks[i]) TBGCheckData;
++		d->setVertex(t.p[0], t.p[1], t.p[2]);
++		col->addCheckDataToGrid(d, TMapCollisionBase::KIND_STATIC);
++		s_portWbSolidNum = i + 1;
++	}
++	OSReport("whitebox: %d triangles, %u of %u collision list nodes\n",
++	         s_portWbSolidNum, col->unk38, col->unk20);
++
++	// start on the spawn tile
++	if (gpMarioPos != nullptr)
++		gpMarioPos->set(250.0f * s_portWbScale, 100.0f, 250.0f * s_portWbScale);
++}
++
++void portWbDraw()
++{
++	if (s_portWbSolidNum <= 0)
++		return;
++	GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_POS, GX_POS_XYZ, GX_F32, 0);
++	GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_CLR0, GX_CLR_RGBA, GX_RGBA8, 0);
++	GXClearVtxDesc();
++	GXSetVtxDesc(GX_VA_POS, GX_DIRECT);
++	GXSetVtxDesc(GX_VA_CLR0, GX_DIRECT);
++	GXLoadPosMtxImm(j3dSys.getViewMtx(), GX_PNMTX0);
++	GXSetCurrentMtx(GX_PNMTX0);
++	GXSetNumChans(1);
++	GXSetChanCtrl(GX_COLOR0A0, GX_FALSE, GX_SRC_REG, GX_SRC_VTX, 0, GX_DF_NONE,
++	              GX_AF_NONE);
++	GXSetChanCtrl(GX_COLOR1A1, GX_FALSE, GX_SRC_REG, GX_SRC_REG, 0, GX_DF_NONE,
++	              GX_AF_NONE);
++	GXSetNumTexGens(0);
++	GXSetNumIndStages(0);
++	GXSetNumTevStages(1);
++	GXSetTevDirect(GX_TEVSTAGE0);
++	GXSetTevOrder(GX_TEVSTAGE0, GX_TEXCOORD_NULL, GX_TEXMAP_NULL, GX_COLOR0A0);
++	GXSetTevOp(GX_TEVSTAGE0, GX_PASSCLR);
++	GXSetBlendMode(GX_BM_NONE, GX_BL_ONE, GX_BL_ZERO, GX_LO_NOOP);
++	GXSetAlphaCompare(GX_ALWAYS, 0, GX_AOP_AND, GX_ALWAYS, 0);
++	GXSetZCompLoc(GX_TRUE);
++	GXSetZMode(GX_TRUE, GX_LEQUAL, GX_TRUE);
++	GXSetCullMode(GX_CULL_NONE);
++
++	const int batch = 900; // triangles per GXBegin
++	for (int start = 0; start < s_portWbSolidNum; start += batch) {
++		int n = s_portWbSolidNum - start;
++		if (n > batch)
++			n = batch;
++		GXBegin(GX_TRIANGLES, GX_VTXFMT0, (u16)(n * 3));
++		for (int i = start; i < start + n; ++i) {
++			const PortWbTri& t = s_portWbTris[i];
++			for (int k = 0; k < 3; ++k) {
++				GXPosition3f32(t.p[k].x, t.p[k].y, t.p[k].z);
++				GXColor4u8(t.r, t.g, t.b, 0xff);
++			}
++		}
++		GXEnd();
++	}
++}
++
++} // namespace
++#endif
+ #ifdef TARGET_PC
+ #include <sms_modhook.h>
+ #include <sms_modhook.h>
+@@ -605,7 +945,10 @@
+ {
+ 	if (cue & CUE_MOVE) {
+ #ifdef TARGET_PC
+-		portScaleStaticCollision(mModelManager->mCollision);
++		if (port_in_debug_level())
++			portWbSetup();
++		else
++			portScaleStaticCollision(mModelManager->mCollision);
+ #endif
+ 		update();
+ 		mCollisionData->initMoveCollision();
+@@ -624,8 +967,13 @@
+ 		}
+ 	}
+ 
+-	if (cue & CUE_DRAW)
++	if (cue & CUE_DRAW) {
+ 		draw(cue, graphics);
++#ifdef TARGET_PC
++		if (port_in_debug_level())
++			portWbDraw();
++#endif
++	}
+ 
+ 	mModelManager->perform(cue, graphics);
+ }
+--- a/src/Map/MapModel.cpp
++++ b/src/Map/MapModel.cpp
+@@ -21,10 +21,19 @@
+ extern "C" int port_world_scale_dirty;
+ #endif
+ 
++#ifdef TARGET_PC
++// Mod: the whitebox test level (Map.cpp) hides the stage's own terrain.
++extern "C" int port_in_debug_level();
++#endif
++
+ void TMapModel::perform(u32 cue, JDrama::TGraphics* graphics)
+ {
+ 	if (checkFlag(FLAG_DEAD))
+ 		return;
++#ifdef TARGET_PC
++	if (port_in_debug_level())
++		return;
++#endif
+ 
+ 	if ((cue & CUE_CALC_ANIM) != 0 && mUnderpass != nullptr) {
+ 		// NOTE: this seems to be the logic for entering delphino plaza
+--- a/src/Strategic/Strategy.cpp
++++ b/src/Strategic/Strategy.cpp
+@@ -4,6 +4,32 @@
+ 
+ TStrategy* gpStrategy;
+ 
++#ifdef TARGET_PC
++#include <Player/MarioAccess.hpp>
++
++// Mod: in the whitebox test level (Map.cpp) only Mario's group runs; the
++// stage's other actors are neither drawn nor hit-checked.
++extern "C" int port_in_debug_level();
++
++static bool portGroupHasMario(TIdxGroupObj* group)
++{
++	TIdxGroupObj::iterator end = group->getChildren().end();
++	for (TIdxGroupObj::iterator it = group->getChildren().begin(); it != end;
++	     ++it)
++		if (&(*it)->mPosition == gpMarioPos)
++			return true;
++	return false;
++}
++
++static void portQuietGroup(TIdxGroupObj* group)
++{
++	TIdxGroupObj::iterator end = group->getChildren().end();
++	for (TIdxGroupObj::iterator it = group->getChildren().begin(); it != end;
++	     ++it)
++		(*it)->onHitFlag(HIT_FLAG_NO_COLLISION);
++}
++#endif
++
+ void TIdxGroupObj::loadSuper(JSUMemoryInputStream& stream)
+ {
+ 	JDrama::TViewObjPtrListT<THitActor>::loadSuper(stream);
+@@ -71,6 +97,19 @@
+ 
+ void TStrategy::perform(u32 cue, JDrama::TGraphics* graphics)
+ {
++#ifdef TARGET_PC
++	if (port_in_debug_level()) {
++		for (int i = 0; i < 16; ++i) {
++			if (unk10[i] == nullptr)
++				continue;
++			if (portGroupHasMario(unk10[i]))
++				unk10[i]->testPerform(cue, graphics);
++			else
++				portQuietGroup(unk10[i]);
++		}
++		return;
++	}
++#endif
+ 
+ 	if ((cue & (CUE_MOVE | CUE_CALC_ANIM)) != 0) {
+ 		if (unk10[0] != (TIdxGroupObj*)0x0)
