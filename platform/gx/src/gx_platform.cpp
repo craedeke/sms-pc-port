@@ -17,6 +17,12 @@
 #ifdef SMS_GX_HAVE_SDL2
 #include <SDL.h>
 #endif
+
+// Mod proof of concept: the Mario size slider (gx_mod_slider.cpp).
+extern "C" void GXPC_ModSliderDraw(int winW, int winH);
+#ifdef SMS_GX_HAVE_SDL2
+extern "C" int GXPC_ModSliderEvent(const SDL_Event* ev, SDL_Window* window);
+#endif
 #ifdef SMS_GX_HAVE_EGL
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
@@ -391,6 +397,7 @@ void GXPC_Present(const void* xfb) {
         double t0 = nowSeconds();
         GXPC_PresentXFB(xfb, w, h);
         GXPC_OverlayDraw(w, h);
+        GXPC_ModSliderDraw(w, h);
         double t1 = nowSeconds();
         SDL_GL_SwapWindow(s_window);
         double t2 = nowSeconds();
@@ -439,6 +446,8 @@ void sms_gx_pump_events(void) {
             if (ev.type == SDL_KEYDOWN && !ev.key.repeat) GXPC_OverlayToggle();
             continue;
         }
+        // the Mario size slider takes the clicks and drags that land on it
+        if (GXPC_ModSliderEvent(&ev, s_window)) continue;
         if (s_mouseCamera) {
             if (ev.type == SDL_WINDOWEVENT && ev.window.event == SDL_WINDOWEVENT_FOCUS_LOST) captureMouse(false);
             if (ev.type == SDL_WINDOWEVENT && ev.window.event == SDL_WINDOWEVENT_FOCUS_GAINED && !s_mouseReleased)

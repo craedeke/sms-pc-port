@@ -13,6 +13,7 @@ set(SMS_GX_SOURCES
     src/gx_fifo.cpp
     src/gx_hires.cpp
     src/gx_launcher.cpp
+    src/gx_mod_slider.cpp
     src/gx_overlay.cpp
     src/gx_platform.cpp
     src/gx_render.cpp

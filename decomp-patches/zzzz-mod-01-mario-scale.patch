@@ -1,0 +1,27 @@
+Reason: mod (proof of concept): a slider in the window's top-right corner scales Mario's model from 0.25x to 2x in real time (platform/gx/src/gx_mod_slider.cpp)
+--- a/src/Player/MarioDraw.cpp
++++ b/src/Player/MarioDraw.cpp
+@@ -44,6 +44,8 @@
+ #endif
+ 
+ #ifdef TARGET_PC
++// Mod: Mario size from the slider in the top-right corner (platform).
++extern "C" float port_mario_scale;
+ #include <sms_modhook.h>
+ #include <sms_modhook.h>
+ 
+@@ -2042,6 +2044,14 @@
+ 	calcBaseMtx(baseMtx);
+ 	considerWaist();
+ 	MTXCopy(baseMtx, getM3UModel()->unk8->getBaseTRMtx());
++#ifdef TARGET_PC
++	{
++		// Mod: the size slider's scale on Mario's whole model (hands, cap
++		// and FLUDD follow his joints, so they scale with him).
++		Vec marioScale = { port_mario_scale, port_mario_scale, port_mario_scale };
++		getM3UModel()->unk8->setBaseScale(marioScale);
++	}
++#endif
+ 	getM3UModel()->perform(param_1, graphics);
+ }
+ 
