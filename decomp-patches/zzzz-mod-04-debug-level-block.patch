@@ -67,7 +67,7 @@ Reason: mod: a DEBUG file-select block right of C (a copy of block A's scene ent
  			break;
  		case 1:
  			unk2C->draw(0, 0, &graph);
-@@ -2320,6 +2328,172 @@
+@@ -2320,6 +2328,174 @@
  	}
  }
  #ifdef TARGET_PC
@@ -132,8 +132,10 @@ Reason: mod: a DEBUG file-select block right of C (a copy of block A's scene ent
 +		if (!port_debug_menu_request)
 +			return false;
 +		port_debug_menu_request = 0;
-+		if (p->unk14 != 0 || p->unk10 != 2)
-+			return false; // the blocks aren't taking a choice right now
++		OSReport("debug menu: requested (screen %d, step %d)\n", (int)p->unk14,
++		         (int)p->unk10);
++		if (p->unk14 != 0)
++			return false; // another screen is up
 +		s_portDebugMenuOpen   = 1;
 +		s_portDebugMenuCursor = 0;
 +		p->unk38->onFlag(0x1); // Mario stands still
@@ -240,7 +242,7 @@ Reason: mod: a DEBUG file-select block right of C (a copy of block A's scene ent
  // port: SMS_WARP=stage,scenario[,shines] sends a file-select load to another
  // area (debugging; 1,0,1 is Delfino Plaza as it is after the airstrip).
  static void port_warp_after_file_select()
-@@ -2554,6 +2728,10 @@
+@@ -2554,6 +2730,10 @@
  		break;
  
  	case PROGRESS_UNK13: {
@@ -251,7 +253,7 @@ Reason: mod: a DEBUG file-select block right of C (a copy of block A's scene ent
  		if (unk24 != 0)
  			selectBookmark(PROGRESS_UNK2, changeMode(unk24), true);
  		int rc = gpCardManager->probe();
-@@ -2838,6 +3016,7 @@
+@@ -2838,6 +3018,7 @@
  			gpMarDirector->setNextStage(1, nullptr);
  #ifdef TARGET_PC
  		port_warp_after_file_select();
@@ -261,7 +263,7 @@ Reason: mod: a DEBUG file-select block right of C (a copy of block A's scene ent
  	} break;
 --- a/src/MoveBG/MapObjOption.cpp
 +++ b/src/MoveBG/MapObjOption.cpp
-@@ -17,6 +17,234 @@
+@@ -17,6 +17,282 @@
  // 234 bytes of .rodata order.
  #include <Map/MapCollisionEntry.hpp>
  
@@ -273,6 +275,7 @@ Reason: mod: a DEBUG file-select block right of C (a copy of block A's scene ent
 +#include <JSystem/J3D/J3DGraphAnimator/J3DModel.hpp>
 +#include <JSystem/J3D/J3DGraphAnimator/J3DJoint.hpp>
 +#include <dolphin/gx.h>
++#include <Player/MarioAccess.hpp>
 +
 +// Mod: a fourth file block, right of C, that loads file A into the whitebox
 +// test level (CardLoad.cpp, Map.cpp). It is a copy of block A's scene entry placed as far
@@ -398,16 +401,10 @@ Reason: mod: a DEBUG file-select block right of C (a copy of block A's scene ent
 +	portFaceVertex(c, r, u, a0, b1, cr, cg, cb);
 +}
 +
-+} // namespace
-+
-+void TFileLoadBlock::perform(u32 cue, JDrama::TGraphics* graphics)
++// The block's box in the world, from its root joint.
++void portBlockBox(TFileLoadBlock* b, f32 lo[3], f32 hi[3])
 +{
-+	TMapObjBase::perform(cue, graphics);
-+	if (this != s_portDebugBlock || !(cue & CUE_DRAW) || getModel() == nullptr)
-+		return;
-+
-+	// The block's box, from its root joint, in the world.
-+	J3DJoint* root = getModel()->getModelData()->getJointNodePointer(0);
++	J3DJoint* root = b->getModel()->getModelData()->getJointNodePointer(0);
 +	Vec mn = root->getMin(), mx = root->getMax();
 +	if (mx.x - mn.x < 1.0f || mx.y - mn.y < 1.0f || mx.z - mn.z < 1.0f) {
 +		mn.x = mn.z = -50.0f;
@@ -415,10 +412,63 @@ Reason: mod: a DEBUG file-select block right of C (a copy of block A's scene ent
 +		mx.x = mx.z = 50.0f;
 +		mx.y = 100.0f;
 +	}
-+	f32 lo[3] = { mPosition.x + mn.x * mScaling.x, mPosition.y + mn.y * mScaling.y,
-+		          mPosition.z + mn.z * mScaling.z };
-+	f32 hi[3] = { mPosition.x + mx.x * mScaling.x, mPosition.y + mx.y * mScaling.y,
-+		          mPosition.z + mx.z * mScaling.z };
++	const JGeometry::TVec3<f32>& p = b->mPosition;
++	const JGeometry::TVec3<f32>& k = b->mScaling;
++	lo[0] = p.x + mn.x * k.x;
++	lo[1] = p.y + mn.y * k.y;
++	lo[2] = p.z + mn.z * k.z;
++	hi[0] = p.x + mx.x * k.x;
++	hi[1] = p.y + mx.y * k.y;
++	hi[2] = p.z + mx.z * k.z;
++}
++
++f32 s_portPrevMarioY  = 0.0f;
++bool s_portPrevMarioOk = false;
++int s_portHeadCooldown = 0;
++
++// A backup for the game's own hit: Mario rising into the underside of the
++// block, judged from his position. Logs what it sees once a second while he
++// is under the block.
++void portDebugBlockHeadCheck(TFileLoadBlock* b)
++{
++	if (gpMarioPos == nullptr)
++		return;
++	if (s_portHeadCooldown > 0)
++		--s_portHeadCooldown;
++	f32 lo[3], hi[3];
++	portBlockBox(b, lo, hi);
++	const JGeometry::TVec3<f32>& m = *gpMarioPos;
++	bool under = m.x > lo[0] - 30.0f && m.x < hi[0] + 30.0f && m.z > lo[2] - 30.0f
++	          && m.z < hi[2] + 30.0f && m.y < lo[1];
++	bool rising = s_portPrevMarioOk && m.y > s_portPrevMarioY + 1.0f;
++	s_portPrevMarioY  = m.y;
++	s_portPrevMarioOk = true;
++	static int logTick = 0;
++	if (under && ++logTick % 60 == 0)
++		OSReport("debug block: Mario under it at y %.0f, block bottom %.0f, "
++		         "state %d\n", m.y, lo[1], (int)b->mState);
++	// his head is about 160 above his feet
++	if (under && rising && m.y + 200.0f > lo[1] && s_portHeadCooldown == 0) {
++		s_portHeadCooldown = 60;
++		OSReport("debug block: head hit (backup check)\n");
++		port_debug_menu_request = 1;
++	}
++}
++
++} // namespace
++
++void TFileLoadBlock::perform(u32 cue, JDrama::TGraphics* graphics)
++{
++	TMapObjBase::perform(cue, graphics);
++	if (this != s_portDebugBlock || getModel() == nullptr)
++		return;
++	if (cue & CUE_MOVE)
++		portDebugBlockHeadCheck(this);
++	if (!(cue & CUE_DRAW))
++		return;
++
++	f32 lo[3], hi[3];
++	portBlockBox(this, lo, hi);
 +	f32 mid[3] = { (lo[0] + hi[0]) * 0.5f, (lo[1] + hi[1]) * 0.5f,
 +		           (lo[2] + hi[2]) * 0.5f };
 +
@@ -496,7 +546,7 @@ Reason: mod: a DEBUG file-select block right of C (a copy of block A's scene ent
  // TODO: UNUSED at 0x38 in the map, the same size as makeBlockNormal and
  // makeBlockRock, so the body is a startAnim/mState pair; which animation index
  // and which state value is a guess, continuing those two functions' pattern
-@@ -32,6 +260,11 @@
+@@ -32,6 +308,11 @@
  {
  	startAnim(0);
  	mState = STATE_NORMAL;
@@ -508,16 +558,41 @@ Reason: mod: a DEBUG file-select block right of C (a copy of block A's scene ent
  }
  
  void TFileLoadBlock::makeBlockRock()
-@@ -59,6 +292,12 @@
+@@ -59,6 +340,14 @@
  void TFileLoadBlock::pushed()
  {
  	startBck("fileloadblock");
 +#ifdef TARGET_PC
 +	// the debug block opens the DEBUG menu (CardLoad.cpp) instead of a file
-+	if (this == s_portDebugBlock)
++	if (this == s_portDebugBlock) {
++		OSReport("debug block: pushed\n");
 +		port_debug_menu_request = 1;
++	}
 +	else
 +#endif
  	gpCardLoad->setSelected(unk138);
  	SMSRumbleMgr->start(0x15, sRumbleTime, (float*)nullptr);
  	gpMarioParticleManager->emit(MAP_MAP_MS_M_FILEBLOCK, &unk144, 0, nullptr);
+@@ -71,12 +360,22 @@
+ 
+ void TFileLoadBlock::touchPlayer(THitActor* param_1)
+ {
++#ifdef TARGET_PC
++	if (this == s_portDebugBlock)
++		OSReport("debug block: touched (state %d, timer %d, head %d)\n",
++		         (int)mState, (int)isStateTimerEngaged(), (int)marioHeadAttack());
++#endif
+ 	if (isState(STATE_NORMAL) && marioHeadAttack() && !isStateTimerEngaged())
+ 		pushed();
+ }
+ 
+ BOOL TFileLoadBlock::receiveMessage(THitActor* sender, u32 message)
+ {
++#ifdef TARGET_PC
++	if (this == s_portDebugBlock)
++		OSReport("debug block: message %x (state %d, timer %d)\n", message,
++		         (int)mState, (int)isStateTimerEngaged());
++#endif
+ 	if (isState(STATE_NORMAL) && message == HIT_MESSAGE_PUSH_UP
+ 	    && !isStateTimerEngaged()) {
+ 		pushed();
