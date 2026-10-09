@@ -1,4 +1,4 @@
-Reason: mod: the file blocks are laid out again (15% further left, closer together) and a DEBUG block (a copy of block A, turned so its letter faces the floor) stands where C was; it opens a DEBUG menu: SANDBOX starts a new game in the whitebox test level (zzzz-mod-05), TEST does nothing yet. No option wall
+Reason: mod: the file blocks are laid out again (moved left, closer together, then nudged right) with a DEBUG block (a copy of block A, turned so its letter faces the floor) fourth in the row; it opens a DEBUG menu: SANDBOX starts a new game in the whitebox test level (zzzz-mod-05), TEST does nothing yet. No option wall
 --- a/include/MoveBG/MapObjOption.hpp
 +++ b/include/MoveBG/MapObjOption.hpp
 @@ -5,6 +5,13 @@
@@ -91,7 +91,7 @@ Reason: mod: the file blocks are laid out again (15% further left, closer togeth
  			break;
  		case 1:
  			unk2C->draw(0, 0, &graph);
-@@ -2320,6 +2337,232 @@
+@@ -2320,6 +2337,240 @@
  	}
  }
  #ifdef TARGET_PC
@@ -197,6 +197,10 @@ Reason: mod: the file blocks are laid out again (15% further left, closer togeth
 +	return true;
 +}
 +
++// the row layout's spacing and nudge (MapObjOption.cpp)
++extern "C" const float kPortRowSpread;
++extern "C" const float kPortRowNudge;
++
 +// Move a pane (and where its animations start from) sideways.
 +static void port_shift_expane(TExPane* ep, int dx)
 +{
@@ -234,6 +238,10 @@ Reason: mod: the file blocks are laid out again (15% further left, closer togeth
 +	}
 +	f32 a1   = x[0] - (x[2] - x[0]) * 0.15f;
 +	f32 step = (x[2] - a1) / 3.0f;
++	// closer together and nudged right, as the blocks are
++	f32 mid = (a1 + x[2]) * 0.5f + (x[2] - x[0]) * kPortRowNudge;
++	step *= kPortRowSpread;
++	a1 = mid - step * 1.5f;
 +	for (int i = 0; i < 3; ++i) {
 +		int dx = (int)(a1 + step * i - x[i] + (a1 + step * i - x[i] < 0 ? -0.5f : 0.5f));
 +		if (dx == 0)
@@ -324,7 +332,7 @@ Reason: mod: the file blocks are laid out again (15% further left, closer togeth
  // port: SMS_WARP=stage,scenario[,shines] sends a file-select load to another
  // area (debugging; 1,0,1 is Delfino Plaza as it is after the airstrip).
  static void port_warp_after_file_select()
-@@ -2554,6 +2797,10 @@
+@@ -2554,6 +2805,10 @@
  		break;
  
  	case PROGRESS_UNK13: {
@@ -335,7 +343,7 @@ Reason: mod: the file blocks are laid out again (15% further left, closer togeth
  		if (unk24 != 0)
  			selectBookmark(PROGRESS_UNK2, changeMode(unk24), true);
  		int rc = gpCardManager->probe();
-@@ -2838,6 +3085,7 @@
+@@ -2838,6 +3093,7 @@
  			gpMarDirector->setNextStage(1, nullptr);
  #ifdef TARGET_PC
  		port_warp_after_file_select();
@@ -345,7 +353,7 @@ Reason: mod: the file blocks are laid out again (15% further left, closer togeth
  	} break;
 --- a/src/MoveBG/MapObjOption.cpp
 +++ b/src/MoveBG/MapObjOption.cpp
-@@ -17,6 +17,641 @@
+@@ -17,6 +17,659 @@
  // 234 bytes of .rodata order.
  #include <Map/MapCollisionEntry.hpp>
  
@@ -376,6 +384,14 @@ Reason: mod: the file blocks are laid out again (15% further left, closer togeth
 +// set when the debug block is hit; CardLoad.cpp opens the DEBUG menu
 +extern "C" int port_debug_menu_request;
 +int port_debug_menu_request = 0;
++
++// The file-block row's layout, shared with CardLoad.cpp's labels: spacing
++// (relative to even spacing from 15% left of A to where C was) and a nudge to
++// the right (as a share of the original A-C span).
++extern "C" const float kPortRowSpread;
++extern "C" const float kPortRowNudge;
++const float kPortRowSpread = 0.9f;
++const float kPortRowNudge  = 0.05f;
 +
 +namespace {
 +
@@ -723,8 +739,18 @@ Reason: mod: the file blocks are laid out again (15% further left, closer togeth
 +	                         a0.z - span.z * 0.15f);
 +	JGeometry::TVec3<f32> step((c0.x - a1.x) / 3.0f, (c0.y - a1.y) / 3.0f,
 +	                           (c0.z - a1.z) / 3.0f);
++	// then 10% closer together, and the whole row nudged right by 5% of the
++	// original A-C span
++	JGeometry::TVec3<f32> mid((a1.x + c0.x) * 0.5f + span.x * kPortRowNudge,
++	                          (a1.y + c0.y) * 0.5f + span.y * kPortRowNudge,
++	                          (a1.z + c0.z) * 0.5f + span.z * kPortRowNudge);
++	step.x *= kPortRowSpread;
++	step.y *= kPortRowSpread;
++	step.z *= kPortRowSpread;
++	a1.set(mid.x - step.x * 1.5f, mid.y - step.y * 1.5f, mid.z - step.z * 1.5f);
 +	JGeometry::TVec3<f32> b1(a1.x + step.x, a1.y + step.y, a1.z + step.z);
 +	JGeometry::TVec3<f32> c1(a1.x + step.x * 2, a1.y + step.y * 2, a1.z + step.z * 2);
++	JGeometry::TVec3<f32> d1(a1.x + step.x * 3, a1.y + step.y * 3, a1.z + step.z * 3);
 +
 +	// for the option wall: which way is left along the row, and how long it is
 +	{
@@ -746,9 +772,9 @@ Reason: mod: the file blocks are laid out again (15% further left, closer togeth
 +	portLoadAt(blockB, pb.body, pb.size, pb.posOffset, b1);
 +	portLoadAt(this, body, size, posOffset, c1);
 +
-+	// the D block, from A's entry, where C was
++	// the D block, from A's entry, fourth in the row
 +	TFileLoadBlock* block = new TFileLoadBlock;
-+	portLoadAt(block, pa.body, pa.size, pa.posOffset, c0);
++	portLoadAt(block, pa.body, pa.size, pa.posOffset, d1);
 +	portGiveDebugBlockItsTexture(block, blockB);
 +
 +	for (int i = 0; i < 2; ++i) {
@@ -987,7 +1013,7 @@ Reason: mod: the file blocks are laid out again (15% further left, closer togeth
  // TODO: UNUSED at 0x38 in the map, the same size as makeBlockNormal and
  // makeBlockRock, so the body is a startAnim/mState pair; which animation index
  // and which state value is a guess, continuing those two functions' pattern
-@@ -32,6 +667,11 @@
+@@ -32,6 +685,11 @@
  {
  	startAnim(0);
  	mState = STATE_NORMAL;
@@ -999,7 +1025,7 @@ Reason: mod: the file blocks are laid out again (15% further left, closer togeth
  }
  
  void TFileLoadBlock::makeBlockRock()
-@@ -59,6 +699,14 @@
+@@ -59,6 +717,14 @@
  void TFileLoadBlock::pushed()
  {
  	startBck("fileloadblock");
@@ -1014,7 +1040,7 @@ Reason: mod: the file blocks are laid out again (15% further left, closer togeth
  	gpCardLoad->setSelected(unk138);
  	SMSRumbleMgr->start(0x15, sRumbleTime, (float*)nullptr);
  	gpMarioParticleManager->emit(MAP_MAP_MS_M_FILEBLOCK, &unk144, 0, nullptr);
-@@ -71,12 +719,22 @@
+@@ -71,12 +737,22 @@
  
  void TFileLoadBlock::touchPlayer(THitActor* param_1)
  {
@@ -1037,7 +1063,7 @@ Reason: mod: the file blocks are laid out again (15% further left, closer togeth
  	if (isState(STATE_NORMAL) && message == HIT_MESSAGE_PUSH_UP
  	    && !isStateTimerEngaged()) {
  		pushed();
-@@ -132,12 +790,28 @@
+@@ -132,12 +808,28 @@
  	unk144.x = unk144.y = unk144.z = 0.0f;
  }
  
