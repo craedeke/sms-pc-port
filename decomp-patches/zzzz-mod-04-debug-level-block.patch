@@ -1,0 +1,212 @@
+Reason: mod: a fourth file-select block left of A (a copy of block A's scene entry) loads file A into the test level (test11) for testing movement
+--- a/include/MoveBG/MapObjOption.hpp
++++ b/include/MoveBG/MapObjOption.hpp
+@@ -5,6 +5,10 @@
+ 
+ class TFileLoadBlock : public TMapObjBase {
+ public:
++#ifdef TARGET_PC
++	// Mod: the debug block left of A is a copy of A made while loading
++	virtual void load(JSUMemoryInputStream& stream);
++#endif
+ 	virtual void loadAfter();
+ 	virtual BOOL receiveMessage(THitActor* sender, u32 message);
+ 	virtual void initMapObj();
+--- a/libs/JSystem/include/JSystem/JDrama/JDRViewObjPtrList.tpp
++++ b/libs/JSystem/include/JSystem/JDrama/JDRViewObjPtrList.tpp
+@@ -3,6 +3,15 @@
+ 
+ #include <JSystem/JDrama/JDRViewObjPtrList.hpp>
+ 
++#ifdef TARGET_PC
++namespace JDrama {
++class TNameRef;
++}
++// Mod (MapObjOption.cpp): a sibling to add to the scene after `loaded`, or
++// null. This is how the debug block joins its group next to block B.
++extern "C" JDrama::TNameRef* port_take_extra_scene_child(JDrama::TNameRef* loaded);
++#endif
++
+ namespace JDrama {
+ 
+ // Definition order here is inert (measured in header round 22): an explicit
+@@ -21,6 +30,10 @@
+ 		if (nr) {
+ 			getChildren().push_back((T*)nr);
+ 			nr->load(stream2);
++#ifdef TARGET_PC
++			if (TNameRef* extra = port_take_extra_scene_child(nr))
++				getChildren().push_back((T*)extra);
++#endif
+ 		}
+ 	}
+ }
+--- a/src/GC2D/CardLoad.cpp
++++ b/src/GC2D/CardLoad.cpp
+@@ -2320,6 +2320,43 @@
+ 	}
+ }
+ #ifdef TARGET_PC
++#include <Strategic/NameRefPtrAry.hpp>
++#include <Strategic/NameRefAry.hpp>
++#include <System/ScenarioArchiveName.hpp>
++
++// Mod: the debug block left of A (MapObjOption.cpp) loads file A into the
++// test level, the stage whose scene archive is test11 (a developer test map
++// left on the disc).
++extern "C" int port_debug_level_requested;
++
++static void port_debug_level_warp()
++{
++	if (!port_debug_level_requested)
++		return;
++	port_debug_level_requested = 0;
++
++	TNameRefPtrAryT<TNameRefAryT<TScenarioArchiveName> >* stages
++	    = gpApplication.unk30;
++	if (stages == nullptr)
++		return;
++	for (u32 stage = 0; stage < stages->getChildren().size(); ++stage) {
++		TNameRefAryT<TScenarioArchiveName>* scenarios
++		    = stages->getChildren()[stage];
++		if (scenarios == nullptr)
++			continue;
++		for (u32 sc = 0; sc < scenarios->size(); ++sc) {
++			const char* arc = scenarios->getChildren()[sc].mArcName;
++			if (arc != nullptr && strstr(arc, "test11") != nullptr) {
++				gpApplication.mNextArea.set(stage, sc, 0);
++				OSReport("debug block: test level, stage %u scenario %u (%s)\n",
++				         stage, sc, arc);
++				return;
++			}
++		}
++	}
++	OSReport("debug block: no test11 stage on this disc\n");
++}
++
+ // port: SMS_WARP=stage,scenario[,shines] sends a file-select load to another
+ // area (debugging; 1,0,1 is Delfino Plaza as it is after the airstrip).
+ static void port_warp_after_file_select()
+@@ -2838,6 +2875,7 @@
+ 			gpMarDirector->setNextStage(1, nullptr);
+ #ifdef TARGET_PC
+ 		port_warp_after_file_select();
++		port_debug_level_warp();
+ #endif
+ 		gpCardManager->unmount();
+ 	} break;
+--- a/src/MoveBG/MapObjOption.cpp
++++ b/src/MoveBG/MapObjOption.cpp
+@@ -17,6 +17,101 @@
+ // 234 bytes of .rodata order.
+ #include <Map/MapCollisionEntry.hpp>
+ 
++#ifdef TARGET_PC
++#include <stdlib.h>
++#include <string.h>
++#include <JSystem/JSupport/JSUMemoryInputStream.hpp>
++
++// Mod: a fourth file block, left of A, that loads file A into the debug test
++// level (CardLoad.cpp). It is a copy of block A's scene entry placed as far
++// left of A as B is right of it, made when B loads and added to B's group.
++extern "C" int port_debug_level_requested;
++int port_debug_level_requested = 0;
++
++namespace {
++
++u8* s_portBlockABody     = nullptr; // block A's entry, from its name on
++s32 s_portBlockABodySize = 0;
++JGeometry::TVec3<f32> s_portBlockAPos;
++TFileLoadBlock* s_portDebugBlock     = nullptr;
++JDrama::TNameRef* s_portDebugAfter   = nullptr;
++bool s_portMakingDebugBlock          = false;
++
++void portPutBE32(u8* p, f32 value)
++{
++	u32 v;
++	memcpy(&v, &value, 4);
++	p[0] = (u8)(v >> 24);
++	p[1] = (u8)(v >> 16);
++	p[2] = (u8)(v >> 8);
++	p[3] = (u8)v;
++}
++
++} // namespace
++
++extern "C" JDrama::TNameRef* port_take_extra_scene_child(JDrama::TNameRef* loaded)
++{
++	if (loaded == nullptr || loaded != s_portDebugAfter)
++		return nullptr;
++	s_portDebugAfter = nullptr;
++	return s_portDebugBlock;
++}
++
++void TFileLoadBlock::load(JSUMemoryInputStream& stream)
++{
++	const u8* body = (const u8*)stream.mBuffer + stream.mPosition;
++	const s32 size = stream.mLength - stream.mPosition;
++
++	TMapObjBase::load(stream);
++
++	if (s_portMakingDebugBlock)
++		return;
++
++	if (unk138 == 0) {
++		// a new file-select scene: keep A's entry for the copy
++		free(s_portBlockABody);
++		s_portBlockABody     = (u8*)malloc(size);
++		s_portBlockABodySize = s_portBlockABody ? size : 0;
++		if (s_portBlockABody)
++			memcpy(s_portBlockABody, body, size);
++		s_portBlockAPos  = mPosition;
++		s_portDebugBlock = nullptr;
++		s_portDebugAfter = nullptr;
++		return;
++	}
++
++	if (unk138 != 1 || s_portBlockABody == nullptr || s_portBlockABodySize < 4)
++		return;
++
++	// The entry starts with the key (u16) and name (u16 length + bytes), then
++	// the position as three big-endian floats.
++	const u8* a     = s_portBlockABody;
++	s32 nameLen     = (a[2] << 8) | a[3];
++	s32 posOffset   = 4 + nameLen;
++	if (posOffset + 12 > s_portBlockABodySize)
++		return;
++
++	u8* copy = (u8*)malloc(s_portBlockABodySize);
++	if (copy == nullptr)
++		return;
++	memcpy(copy, s_portBlockABody, s_portBlockABodySize);
++	// as far left of A as B is right of it
++	portPutBE32(copy + posOffset + 0, s_portBlockAPos.x * 2.0f - mPosition.x);
++	portPutBE32(copy + posOffset + 4, s_portBlockAPos.y * 2.0f - mPosition.y);
++	portPutBE32(copy + posOffset + 8, s_portBlockAPos.z * 2.0f - mPosition.z);
++
++	TFileLoadBlock* block = new TFileLoadBlock;
++	JSUMemoryInputStream copyStream(copy, s_portBlockABodySize);
++	s_portMakingDebugBlock = true;
++	block->load(copyStream);
++	s_portMakingDebugBlock = false;
++	// copy stays allocated: a few bytes, once per file-select scene
++
++	s_portDebugBlock = block;
++	s_portDebugAfter = this;
++}
++#endif
++
+ // TODO: UNUSED at 0x38 in the map, the same size as makeBlockNormal and
+ // makeBlockRock, so the body is a startAnim/mState pair; which animation index
+ // and which state value is a guess, continuing those two functions' pattern
+@@ -58,6 +153,10 @@
+ // the same two frames, but nothing here names such an object.
+ void TFileLoadBlock::pushed()
+ {
++#ifdef TARGET_PC
++	// the debug block selects file A, and loading it goes to the test level
++	port_debug_level_requested = this == s_portDebugBlock ? 1 : 0;
++#endif
+ 	startBck("fileloadblock");
+ 	gpCardLoad->setSelected(unk138);
+ 	SMSRumbleMgr->start(0x15, sRumbleTime, (float*)nullptr);
