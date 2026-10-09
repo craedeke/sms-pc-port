@@ -1,7 +1,7 @@
-Reason: mod: the whitebox test level: in the debug block's stage the terrain is hidden and its collision replaced by drawn, solid test shapes (floor, stairs, ramps, walls, wall-kick corridor, ledges, hill); other actors are switched off
+Reason: mod: the whitebox test level: in the debug block's stage the terrain is hidden and its collision replaced by drawn, solid test shapes (floor, stairs, ramps, walls, wall-kick corridor, ledges, hill); other actors are switched off. Also takes the file-select stage's invisible walls away
 --- a/src/Map/Map.cpp
 +++ b/src/Map/Map.cpp
-@@ -112,6 +112,346 @@
+@@ -112,6 +112,374 @@
  
  } // namespace
  #endif
@@ -19,6 +19,7 @@ Reason: mod: the whitebox test level: in the debug block's stage the terrain is 
 +// shapes built here -- a checker floor, stairs, ramps, walls, a wall-kick
 +// corridor, ledges and a hill -- every one of them drawn and solid, from the
 +// same triangles. Other actors are switched off (Strategy.cpp).
++extern "C" int port_menu_strip_walls;
 +extern "C" int port_debug_level_stage;
 +extern "C" int port_debug_level_scenario;
 +
@@ -298,6 +299,33 @@ Reason: mod: the whitebox test level: in the debug block's stage the terrain is 
 +		gpMarioPos->set(250.0f * s_portWbScale, 100.0f, 250.0f * s_portWbScale);
 +}
 +
++// The file-select stage: take its own walls (its terrain's, not the blocks')
++// out of the static collision grid, once, so nothing invisible stops Mario
++// on the menu. MapObjOption.cpp flags the stage when it builds the option
++// wall, which only that stage has.
++void portStripMenuWalls(TMapCollisionBase* terrain)
++{
++	TMapCollisionData* col = gpMapCollisionData;
++	if (col == nullptr || col->unk14 == nullptr || terrain == nullptr
++	    || terrain->mCheckDatas == nullptr)
++		return;
++	const TBGCheckData* lo = terrain->mCheckDatas;
++	const TBGCheckData* hi = lo + terrain->mCheckDataNum;
++	int removed = 0;
++	for (u32 cell = 0; cell < col->unk10; ++cell) {
++		TBGCheckList* prev = &col->unk14[cell].unk0[2]; // the cell's walls
++		for (TBGCheckList* n = prev->mNext; n != nullptr; n = prev->mNext) {
++			if (n->unk8 >= lo && n->unk8 < hi) {
++				prev->mNext = n->mNext;
++				++removed;
++			} else {
++				prev = n;
++			}
++		}
++	}
++	OSReport("menu: took %d invisible wall pieces out\n", removed);
++}
++
 +void portWbDraw()
 +{
 +	if (s_portWbSolidNum <= 0)
@@ -348,7 +376,7 @@ Reason: mod: the whitebox test level: in the debug block's stage the terrain is 
  #ifdef TARGET_PC
  #include <sms_modhook.h>
  #include <sms_modhook.h>
-@@ -605,7 +945,10 @@
+@@ -605,7 +973,14 @@
  {
  	if (cue & CUE_MOVE) {
  #ifdef TARGET_PC
@@ -357,10 +385,14 @@ Reason: mod: the whitebox test level: in the debug block's stage the terrain is 
 +			portWbSetup();
 +		else
 +			portScaleStaticCollision(mModelManager->mCollision);
++		if (port_menu_strip_walls) {
++			port_menu_strip_walls = 0;
++			portStripMenuWalls(mModelManager->mCollision);
++		}
  #endif
  		update();
  		mCollisionData->initMoveCollision();
-@@ -624,8 +967,13 @@
+@@ -624,8 +999,13 @@
  		}
  	}
  
