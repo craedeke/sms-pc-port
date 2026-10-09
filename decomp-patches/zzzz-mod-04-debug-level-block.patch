@@ -1,13 +1,15 @@
-Reason: mod: a fourth file-select block right of C (a copy of block A's scene entry) loads file A into the whitebox test level (test11 rebuilt by zzzz-mod-05) for testing movement
+Reason: mod: a DEBUG file-select block right of C (a copy of block A's scene entry, with its own face) opens a DEBUG menu: SANDBOX starts a new game in the whitebox test level (zzzz-mod-05), TEST does nothing yet
 --- a/include/MoveBG/MapObjOption.hpp
 +++ b/include/MoveBG/MapObjOption.hpp
-@@ -5,6 +5,10 @@
+@@ -5,6 +5,12 @@
  
  class TFileLoadBlock : public TMapObjBase {
  public:
 +#ifdef TARGET_PC
-+	// Mod: the debug block left of A is a copy of A made while loading
++	// Mod: the debug block right of C is a copy of A made while loading,
++	// drawn with its own face
 +	virtual void load(JSUMemoryInputStream& stream);
++	virtual void perform(u32 cue, JDrama::TGraphics* graphics);
 +#endif
  	virtual void loadAfter();
  	virtual BOOL receiveMessage(THitActor* sender, u32 message);
@@ -43,7 +45,29 @@ Reason: mod: a fourth file-select block right of C (a copy of block A's scene en
  }
 --- a/src/GC2D/CardLoad.cpp
 +++ b/src/GC2D/CardLoad.cpp
-@@ -2320,6 +2320,50 @@
+@@ -764,6 +764,11 @@
+ 	p->unk258 = 0;
+ }
+ 
++#ifdef TARGET_PC
++// Mod: the DEBUG block's label and menu (defined below changeScene's helpers)
++static void port_debug_menu_draw(TCardLoad* p, J2DOrthoGraph* graph);
++#endif
++
+ void TCardLoad::perform(u32 cue, JDrama::TGraphics* graphics)
+ {
+ 	if (cue & CUE_MOVE) {
+@@ -925,6 +930,9 @@
+ 		switch (unk14) {
+ 		case 0:
+ 			unk28->draw(0, 0, &graph);
++#ifdef TARGET_PC
++			port_debug_menu_draw(this, &graph);
++#endif
+ 			break;
+ 		case 1:
+ 			unk2C->draw(0, 0, &graph);
+@@ -2320,6 +2328,171 @@
  	}
  }
  #ifdef TARGET_PC
@@ -91,10 +115,142 @@ Reason: mod: a fourth file-select block right of C (a copy of block A's scene en
 +	OSReport("debug block: no test11 stage on this disc\n");
 +}
 +
++// Mod: the DEBUG block (right of C) opens this menu instead of a file:
++// SANDBOX starts a new game in the whitebox test level, TEST does nothing yet.
++#include <JSystem/J2D/J2DPrint.hpp>
++
++extern "C" int port_debug_menu_request;
++static int s_portDebugMenuOpen   = 0;
++static int s_portDebugMenuCursor = 0;
++static const char* const kPortDebugMenuItems[2] = { "SANDBOX", "TEST" };
++
++// While the menu is up it has the pad; returns true then, so the file
++// blocks' own logic waits.
++static bool port_debug_menu_update(TCardLoad* p)
++{
++	if (!s_portDebugMenuOpen) {
++		if (!port_debug_menu_request)
++			return false;
++		port_debug_menu_request = 0;
++		if (p->unk14 != 0 || p->unk10 != 2)
++			return false; // the blocks aren't taking a choice right now
++		s_portDebugMenuOpen   = 1;
++		s_portDebugMenuCursor = 0;
++		p->unk38->onFlag(0x1); // Mario stands still
++		SMSGetMSound()->startSoundSystemSE(MSD_SE_SY_COIN_APPEAR, 0, nullptr,
++		                                   0);
++		return true;
++	}
++
++	TMarioGamePad* pad = p->unk38;
++	if (pad->checkFrameMeaning(0x4) || pad->checkFrameMeaning(0x2)) {
++		s_portDebugMenuCursor ^= 1;
++		SMSGetMSound()->startSoundSystemSE(MSD_SE_SY_SELECT_COMMON, 0, nullptr,
++		                                   0);
++	} else if (pad->checkFrameMeaning(0x20)) {
++		if (s_portDebugMenuCursor == 0) {
++			// SANDBOX: a fresh game, sent to the whitebox level
++			SMSGetMSound()->startSoundSystemSE(MSD_SE_SY_DECIDE_COMMON, 0,
++			                                   nullptr, 0);
++			s_portDebugMenuOpen = 0;
++			SMSGetApplication()->mSaveFile = 0;
++			TFlagManager::getInstance()->firstStart();
++			port_debug_level_requested = 1;
++			p->unk1C                   = PROGRESS_UNK29;
++		} else {
++			// TEST: nothing yet
++			SMSGetMSound()->startSoundSystemSE(MSD_SE_SY_CANCEL_COMMON, 0,
++			                                   nullptr, 0);
++		}
++	} else if (pad->checkFrameMeaning(0x40)) {
++		SMSGetMSound()->startSoundSystemSE(MSD_SE_SY_CANCEL_COMMON, 0, nullptr,
++		                                   0);
++		s_portDebugMenuOpen = 0;
++		pad->offFlag(0x1);
++	}
++	return true;
++}
++
++static void port_debug_text(JUTFont* font, int sizeX, int sizeY,
++                            const JUTRect& box, const char* text,
++                            JUtility::TColor top, JUtility::TColor bottom)
++{
++	J2DPrint print(font, top, bottom);
++	print.setFontSize(sizeX, sizeY);
++	J2DPrint::TSize size;
++	print.getSize(size, text);
++	int x = box.x1 + (int)((box.getWidth() - size.unk0) * 0.5f);
++	int y = box.y1 + (int)((box.getHeight() + sizeY * 0.75f) * 0.5f);
++	print.print(x, y, text);
++}
++
++static void port_debug_menu_draw(TCardLoad* p, J2DOrthoGraph* graph)
++{
++	if (p->unk2A4[1] == nullptr || p->unk2A4[2] == nullptr
++	    || p->unk2C0[2] == nullptr)
++		return;
++	J2DPane* paneB = p->unk2A4[1]->getPane();
++	J2DPane* paneC = p->unk2A4[2]->getPane();
++	if (paneB == nullptr || paneC == nullptr || !paneC->isVisible())
++		return;
++	JUTFont* font = p->unk2C0[2]->mFont;
++	if (font == nullptr)
++		return;
++
++	// the label sits as far right of C's as C's is right of B's
++	const JUTRect& rb = paneB->getGlobalBounds();
++	const JUTRect& rc = paneC->getGlobalBounds();
++	int dx = rc.x1 - rb.x1;
++	JUTRect label(rc.x1 + dx, rc.y1, rc.x2 + dx, rc.y2);
++	int sizeY = p->unk2C0[2]->mFontSizeY > 0 ? p->unk2C0[2]->mFontSizeY : 24;
++	int sizeX = p->unk2C0[2]->mFontSizeX > 0 ? p->unk2C0[2]->mFontSizeX : sizeY;
++	if (label.getHeight() < sizeY + 4)
++		label.y2 = label.y1 + sizeY + 4;
++
++	graph->setup2D();
++	graph->setColor(JUtility::TColor(60, 24, 110, 210));
++	graph->fillBox(label);
++	port_debug_text(font, sizeX, sizeY, label, "DEBUG",
++	                JUtility::TColor(255, 255, 255, 255),
++	                JUtility::TColor(255, 210, 90, 255));
++
++	if (!s_portDebugMenuOpen)
++		return;
++	// the two choices below it, the chosen one green as the game's are
++	int lineH = sizeY + 10;
++	int w     = label.getWidth() > sizeX * 9 ? label.getWidth() : sizeX * 9;
++	int cx    = (label.x1 + label.x2) / 2;
++	JUTRect menu(cx - w / 2, label.y2 + 8, cx + w / 2, label.y2 + 8 + lineH * 2 + 8);
++	graph->setup2D();
++	graph->setColor(JUtility::TColor(20, 20, 40, 220));
++	graph->fillBox(menu);
++	for (int i = 0; i < 2; ++i) {
++		JUTRect line(menu.x1, menu.y1 + 4 + i * lineH, menu.x2,
++		             menu.y1 + 4 + (i + 1) * lineH);
++		bool on = i == s_portDebugMenuCursor;
++		port_debug_text(font, sizeX, sizeY, line, kPortDebugMenuItems[i],
++		                on ? JUtility::TColor(0, 255, 0, 255)
++		                   : JUtility::TColor(255, 255, 255, 255),
++		                on ? JUtility::TColor(0, 200, 0, 255)
++		                   : JUtility::TColor(200, 200, 200, 255));
++	}
++}
++
  // port: SMS_WARP=stage,scenario[,shines] sends a file-select load to another
  // area (debugging; 1,0,1 is Delfino Plaza as it is after the airstrip).
  static void port_warp_after_file_select()
-@@ -2838,6 +2882,7 @@
+@@ -2554,6 +2727,10 @@
+ 		break;
+ 
+ 	case PROGRESS_UNK13: {
++#ifdef TARGET_PC
++		if (port_debug_menu_update(this))
++			break;
++#endif
+ 		if (unk24 != 0)
+ 			selectBookmark(PROGRESS_UNK2, changeMode(unk24), true);
+ 		int rc = gpCardManager->probe();
+@@ -2838,6 +3015,7 @@
  			gpMarDirector->setNextStage(1, nullptr);
  #ifdef TARGET_PC
  		port_warp_after_file_select();
@@ -104,7 +260,7 @@ Reason: mod: a fourth file-select block right of C (a copy of block A's scene en
  	} break;
 --- a/src/MoveBG/MapObjOption.cpp
 +++ b/src/MoveBG/MapObjOption.cpp
-@@ -17,6 +17,109 @@
+@@ -17,6 +17,234 @@
  // 234 bytes of .rodata order.
  #include <Map/MapCollisionEntry.hpp>
  
@@ -112,12 +268,19 @@ Reason: mod: a fourth file-select block right of C (a copy of block A's scene en
 +#include <stdlib.h>
 +#include <string.h>
 +#include <JSystem/JSupport/JSUMemoryInputStream.hpp>
++#include <JSystem/J3D/J3DGraphBase/J3DSys.hpp>
++#include <JSystem/J3D/J3DGraphAnimator/J3DModel.hpp>
++#include <JSystem/J3D/J3DGraphAnimator/J3DJoint.hpp>
++#include <dolphin/gx.h>
 +
 +// Mod: a fourth file block, right of C, that loads file A into the whitebox
 +// test level (CardLoad.cpp, Map.cpp). It is a copy of block A's scene entry placed as far
 +// right of C as C is right of B, made when C loads and added to C's group.
 +extern "C" int port_debug_level_requested;
 +int port_debug_level_requested = 0;
++// set when the debug block is hit; CardLoad.cpp opens the DEBUG menu
++extern "C" int port_debug_menu_request;
++int port_debug_menu_request = 0;
 +
 +namespace {
 +
@@ -209,19 +372,151 @@ Reason: mod: a fourth file-select block right of C (a copy of block A's scene en
 +	s_portDebugBlock = block;
 +	s_portDebugAfter = this;
 +}
++
++namespace {
++
++// a 5 x 7 "D", top row first
++const char* const kPortGlyphD[7] = {
++	"1111.", "1...1", "1...1", "1...1", "1...1", "1...1", "1111.",
++};
++
++void portFaceVertex(const f32 c[3], const f32 r[3], const f32 u[3], f32 a,
++                    f32 b, u8 cr, u8 cg, u8 cb)
++{
++	GXPosition3f32(c[0] + r[0] * a + u[0] * b, c[1] + r[1] * a + u[1] * b,
++	               c[2] + r[2] * a + u[2] * b);
++	GXColor4u8(cr, cg, cb, 0xff);
++}
++
++void portFaceQuad(const f32 c[3], const f32 r[3], const f32 u[3], f32 a0,
++                  f32 b0, f32 a1, f32 b1, u8 cr, u8 cg, u8 cb)
++{
++	portFaceVertex(c, r, u, a0, b0, cr, cg, cb);
++	portFaceVertex(c, r, u, a1, b0, cr, cg, cb);
++	portFaceVertex(c, r, u, a1, b1, cr, cg, cb);
++	portFaceVertex(c, r, u, a0, b1, cr, cg, cb);
++}
++
++} // namespace
++
++void TFileLoadBlock::perform(u32 cue, JDrama::TGraphics* graphics)
++{
++	TMapObjBase::perform(cue, graphics);
++	if (this != s_portDebugBlock || !(cue & CUE_DRAW) || getModel() == nullptr)
++		return;
++
++	// The block's box, from its root joint, in the world.
++	J3DJoint* root = getModel()->getModelData()->getJointNodePointer(0);
++	Vec mn = root->getMin(), mx = root->getMax();
++	if (mx.x - mn.x < 1.0f || mx.y - mn.y < 1.0f || mx.z - mn.z < 1.0f) {
++		mn.x = mn.z = -50.0f;
++		mn.y = 0.0f;
++		mx.x = mx.z = 50.0f;
++		mx.y = 100.0f;
++	}
++	f32 lo[3] = { mPosition.x + mn.x * mScaling.x, mPosition.y + mn.y * mScaling.y,
++		          mPosition.z + mn.z * mScaling.z };
++	f32 hi[3] = { mPosition.x + mx.x * mScaling.x, mPosition.y + mx.y * mScaling.y,
++		          mPosition.z + mx.z * mScaling.z };
++	f32 mid[3] = { (lo[0] + hi[0]) * 0.5f, (lo[1] + hi[1]) * 0.5f,
++		           (lo[2] + hi[2]) * 0.5f };
++
++	// The camera, from the view matrix: -R^T t.
++	MtxPtr v = j3dSys.getViewMtx();
++	f32 cam[3];
++	for (int i = 0; i < 3; ++i)
++		cam[i] = -(v[0][i] * v[0][3] + v[1][i] * v[1][3] + v[2][i] * v[2][3]);
++
++	// The side facing the camera: X or Z, whichever it is more in front of.
++	f32 dx = (cam[0] - mid[0]) / (hi[0] - lo[0] + 1.0f);
++	f32 dz = (cam[2] - mid[2]) / (hi[2] - lo[2] + 1.0f);
++	f32 n[3] = { 0, 0, 0 };
++	f32 halfW, halfH = (hi[1] - lo[1]) * 0.5f;
++	f32 c[3] = { mid[0], mid[1], mid[2] };
++	if ((dx < 0 ? -dx : dx) > (dz < 0 ? -dz : dz)) {
++		n[0] = dx > 0 ? 1.0f : -1.0f;
++		c[0] = (n[0] > 0 ? hi[0] : lo[0]) + n[0] * 1.5f;
++		halfW = (hi[2] - lo[2]) * 0.5f;
++	} else {
++		n[2] = dz > 0 ? 1.0f : -1.0f;
++		c[2] = (n[2] > 0 ? hi[2] : lo[2]) + n[2] * 1.5f;
++		halfW = (hi[0] - lo[0]) * 0.5f;
++	}
++	// seen from outside, right = -n x up
++	f32 u[3] = { 0, 1, 0 };
++	f32 r[3] = { n[2], 0, -n[0] };
++
++	GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_POS, GX_POS_XYZ, GX_F32, 0);
++	GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_CLR0, GX_CLR_RGBA, GX_RGBA8, 0);
++	GXClearVtxDesc();
++	GXSetVtxDesc(GX_VA_POS, GX_DIRECT);
++	GXSetVtxDesc(GX_VA_CLR0, GX_DIRECT);
++	GXLoadPosMtxImm(v, GX_PNMTX0);
++	GXSetCurrentMtx(GX_PNMTX0);
++	GXSetNumChans(1);
++	GXSetChanCtrl(GX_COLOR0A0, GX_FALSE, GX_SRC_REG, GX_SRC_VTX, 0, GX_DF_NONE,
++	              GX_AF_NONE);
++	GXSetNumTexGens(0);
++	GXSetNumIndStages(0);
++	GXSetNumTevStages(1);
++	GXSetTevDirect(GX_TEVSTAGE0);
++	GXSetTevOrder(GX_TEVSTAGE0, GX_TEXCOORD_NULL, GX_TEXMAP_NULL, GX_COLOR0A0);
++	GXSetTevOp(GX_TEVSTAGE0, GX_PASSCLR);
++	GXSetBlendMode(GX_BM_NONE, GX_BL_ONE, GX_BL_ZERO, GX_LO_NOOP);
++	GXSetAlphaCompare(GX_ALWAYS, 0, GX_AOP_AND, GX_ALWAYS, 0);
++	GXSetZCompLoc(GX_TRUE);
++	GXSetZMode(GX_TRUE, GX_LEQUAL, GX_TRUE);
++	GXSetCullMode(GX_CULL_NONE);
++
++	// a purple panel over the letter, a white "D" on it
++	int lit = 0;
++	for (int row = 0; row < 7; ++row)
++		for (int col = 0; col < 5; ++col)
++			lit += kPortGlyphD[row][col] == '1';
++	GXBegin(GX_QUADS, GX_VTXFMT0, (u16)(4 + lit * 4));
++	const f32 inset = 0.92f;
++	portFaceQuad(c, r, u, -halfW * inset, -halfH * inset, halfW * inset,
++	             halfH * inset, 0x5a, 0x2a, 0x9a);
++	const f32 cell = halfH * inset * 2.0f / 9.0f; // 7 rows plus a margin
++	// in front of the panel by a hair
++	f32 c2[3] = { c[0] + n[0] * 0.8f, c[1], c[2] + n[2] * 0.8f };
++	for (int row = 0; row < 7; ++row)
++		for (int col = 0; col < 5; ++col) {
++			if (kPortGlyphD[row][col] != '1')
++				continue;
++			f32 a0 = (col - 2.5f) * cell, b0 = (3.5f - row - 1) * cell;
++			portFaceQuad(c2, r, u, a0, b0, a0 + cell, b0 + cell, 0xff, 0xff,
++			             0xff);
++		}
++	GXEnd();
++}
 +#endif
 +
  // TODO: UNUSED at 0x38 in the map, the same size as makeBlockNormal and
  // makeBlockRock, so the body is a startAnim/mState pair; which animation index
  // and which state value is a guess, continuing those two functions' pattern
-@@ -58,6 +161,10 @@
- // the same two frames, but nothing here names such an object.
+@@ -32,6 +260,11 @@
+ {
+ 	startAnim(0);
+ 	mState = STATE_NORMAL;
++#ifdef TARGET_PC
++	// the debug block becomes hittable when the real ones do
++	if (this != s_portDebugBlock && unk138 == 0 && s_portDebugBlock != nullptr)
++		s_portDebugBlock->makeBlockNormal();
++#endif
+ }
+ 
+ void TFileLoadBlock::makeBlockRock()
+@@ -59,6 +292,12 @@
  void TFileLoadBlock::pushed()
  {
-+#ifdef TARGET_PC
-+	// the debug block selects file A, and loading it goes to the test level
-+	port_debug_level_requested = this == s_portDebugBlock ? 1 : 0;
-+#endif
  	startBck("fileloadblock");
++#ifdef TARGET_PC
++	// the debug block opens the DEBUG menu (CardLoad.cpp) instead of a file
++	if (this == s_portDebugBlock)
++		port_debug_menu_request = 1;
++	else
++#endif
  	gpCardLoad->setSelected(unk138);
  	SMSRumbleMgr->start(0x15, sRumbleTime, (float*)nullptr);
+ 	gpMarioParticleManager->emit(MAP_MAP_MS_M_FILEBLOCK, &unk144, 0, nullptr);
