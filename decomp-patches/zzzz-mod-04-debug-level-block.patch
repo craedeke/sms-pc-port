@@ -67,7 +67,7 @@ Reason: mod: a DEBUG file-select block right of C (a copy of block A's scene ent
  			break;
  		case 1:
  			unk2C->draw(0, 0, &graph);
-@@ -2320,6 +2328,171 @@
+@@ -2320,6 +2328,172 @@
  	}
  }
  #ifdef TARGET_PC
@@ -175,13 +175,14 @@ Reason: mod: a DEBUG file-select block right of C (a copy of block A's scene ent
 +                            const JUTRect& box, const char* text,
 +                            JUtility::TColor top, JUtility::TColor bottom)
 +{
-+	J2DPrint print(font, top, bottom);
++	// (font, colour, colour) and getSize are empty in the decomp's J2DPrint:
++	// this constructor and getWidth are the implemented ones
++	J2DPrint print(font, 0, -0x80000000, top, bottom);
 +	print.setFontSize(sizeX, sizeY);
-+	J2DPrint::TSize size;
-+	print.getSize(size, text);
-+	int x = box.x1 + (int)((box.getWidth() - size.unk0) * 0.5f);
++	f32 width = print.getWidth("%s", text);
++	int x = box.x1 + (int)((box.getWidth() - width) * 0.5f);
 +	int y = box.y1 + (int)((box.getHeight() + sizeY * 0.75f) * 0.5f);
-+	print.print(x, y, text);
++	print.print(x, y, "%s", text);
 +}
 +
 +static void port_debug_menu_draw(TCardLoad* p, J2DOrthoGraph* graph)
@@ -239,7 +240,7 @@ Reason: mod: a DEBUG file-select block right of C (a copy of block A's scene ent
  // port: SMS_WARP=stage,scenario[,shines] sends a file-select load to another
  // area (debugging; 1,0,1 is Delfino Plaza as it is after the airstrip).
  static void port_warp_after_file_select()
-@@ -2554,6 +2727,10 @@
+@@ -2554,6 +2728,10 @@
  		break;
  
  	case PROGRESS_UNK13: {
@@ -250,7 +251,7 @@ Reason: mod: a DEBUG file-select block right of C (a copy of block A's scene ent
  		if (unk24 != 0)
  			selectBookmark(PROGRESS_UNK2, changeMode(unk24), true);
  		int rc = gpCardManager->probe();
-@@ -2838,6 +3015,7 @@
+@@ -2838,6 +3016,7 @@
  			gpMarDirector->setNextStage(1, nullptr);
  #ifdef TARGET_PC
  		port_warp_after_file_select();
