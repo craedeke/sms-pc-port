@@ -1,4 +1,4 @@
-Reason: mod: the file blocks are laid out again (15% further left, closer together) and a DEBUG block (a copy of block A with its own D texture) stands where C was; it opens a DEBUG menu: SANDBOX starts a new game in the whitebox test level (zzzz-mod-05), TEST does nothing yet
+Reason: mod: the file blocks are laid out again (15% further left, closer together) and a DEBUG block (a copy of block A with its own D texture) stands where C was; it opens a DEBUG menu: SANDBOX starts a new game in the whitebox test level (zzzz-mod-05), TEST does nothing yet. The option wall on the left moves off camera
 --- a/include/MoveBG/MapObjOption.hpp
 +++ b/include/MoveBG/MapObjOption.hpp
 @@ -5,6 +5,12 @@
@@ -344,7 +344,7 @@ Reason: mod: the file blocks are laid out again (15% further left, closer togeth
  	} break;
 --- a/src/MoveBG/MapObjOption.cpp
 +++ b/src/MoveBG/MapObjOption.cpp
-@@ -17,6 +17,553 @@
+@@ -17,6 +17,573 @@
  // 234 bytes of .rodata order.
  #include <Map/MapCollisionEntry.hpp>
  
@@ -438,6 +438,12 @@ Reason: mod: the file blocks are laid out again (15% further left, closer togeth
 +	s32 posOffset;
 +};
 +PortPendingBlock s_portPending[2]; // A and B, waiting for C
++
++// The block row as the scene placed it (before our layout): for moving the
++// option wall out of the way.
++bool s_portRowKnown = false;
++f32 s_portLeftX = 0.0f, s_portLeftZ = 0.0f, s_portRowSpan = 0.0f;
++f32 s_portRowMidX = 0.0f, s_portRowMidZ = 0.0f;
 +
 +void portLoadAt(TFileLoadBlock* block, const u8* body, s32 size, s32 posOffset,
 +                const JGeometry::TVec3<f32>& pos)
@@ -714,6 +720,20 @@ Reason: mod: the file blocks are laid out again (15% further left, closer togeth
 +	JGeometry::TVec3<f32> b1(a1.x + step.x, a1.y + step.y, a1.z + step.z);
 +	JGeometry::TVec3<f32> c1(a1.x + step.x * 2, a1.y + step.y * 2, a1.z + step.z * 2);
 +
++	// for the option wall: which way is left along the row, and how long it is
++	{
++		f32 lx = a0.x - c0.x, lz = a0.z - c0.z;
++		f32 len = sqrtf(lx * lx + lz * lz);
++		if (len > 1.0f) {
++			s_portLeftX    = lx / len;
++			s_portLeftZ    = lz / len;
++			s_portRowSpan  = len;
++			s_portRowMidX  = (a0.x + c0.x) * 0.5f;
++			s_portRowMidZ  = (a0.z + c0.z) * 0.5f;
++			s_portRowKnown = true;
++		}
++	}
++
 +	TFileLoadBlock* blockA = pa.block;
 +	TFileLoadBlock* blockB = pb.block;
 +	portLoadAt(blockA, pa.body, pa.size, pa.posOffset, a1);
@@ -898,7 +918,7 @@ Reason: mod: the file blocks are laid out again (15% further left, closer togeth
  // TODO: UNUSED at 0x38 in the map, the same size as makeBlockNormal and
  // makeBlockRock, so the body is a startAnim/mState pair; which animation index
  // and which state value is a guess, continuing those two functions' pattern
-@@ -32,6 +579,11 @@
+@@ -32,6 +599,11 @@
  {
  	startAnim(0);
  	mState = STATE_NORMAL;
@@ -910,7 +930,7 @@ Reason: mod: the file blocks are laid out again (15% further left, closer togeth
  }
  
  void TFileLoadBlock::makeBlockRock()
-@@ -59,6 +611,14 @@
+@@ -59,6 +631,14 @@
  void TFileLoadBlock::pushed()
  {
  	startBck("fileloadblock");
@@ -925,7 +945,7 @@ Reason: mod: the file blocks are laid out again (15% further left, closer togeth
  	gpCardLoad->setSelected(unk138);
  	SMSRumbleMgr->start(0x15, sRumbleTime, (float*)nullptr);
  	gpMarioParticleManager->emit(MAP_MAP_MS_M_FILEBLOCK, &unk144, 0, nullptr);
-@@ -71,12 +631,22 @@
+@@ -71,12 +651,22 @@
  
  void TFileLoadBlock::touchPlayer(THitActor* param_1)
  {
@@ -948,3 +968,47 @@ Reason: mod: the file blocks are laid out again (15% further left, closer togeth
  	if (isState(STATE_NORMAL) && message == HIT_MESSAGE_PUSH_UP
  	    && !isStateTimerEngaged()) {
  		pushed();
+@@ -132,7 +722,43 @@
+ 	unk144.x = unk144.y = unk144.z = 0.0f;
+ }
+ 
++#ifdef TARGET_PC
++// Mod: the option wall's invisible collision stands at the left of the
++// file-select screen; with the blocks moved left it is moved further left,
++// off camera, by the length of the original A-C row. A wall on the right is
++// left where it is.
++void TMapObjOptionWall::onCollision()
++{
++	if (!s_portRowKnown || unk68 == nullptr || unk68->mVertices == nullptr
++	    || unk68->mVertexNum == 0) {
++		unk68->setUp();
++		return;
++	}
++	f32 sx = 0.0f, sz = 0.0f;
++	for (u32 i = 0; i < unk68->mVertexNum; ++i) {
++		sx += unk68->mVertices[i].x;
++		sz += unk68->mVertices[i].z;
++	}
++	sx /= unk68->mVertexNum;
++	sz /= unk68->mVertexNum;
++	f32 side = (sx - s_portRowMidX) * s_portLeftX + (sz - s_portRowMidZ) * s_portLeftZ;
++	JGeometry::TVec3<f32> offset(0.0f, 0.0f, 0.0f);
++	if (side > 0.0f) {
++		offset.x = s_portLeftX * s_portRowSpan;
++		offset.z = s_portLeftZ * s_portRowSpan;
++	}
++	static bool logged = false;
++	if (!logged) {
++		logged = true;
++		OSReport("option wall: centre %.0f,%.0f, %.0f along the row to the left; "
++		         "moved %.0f,%.0f\n",
++		         sx, sz, side, offset.x, offset.z);
++	}
++	unk68->setUpTrans(offset);
++}
++#else
+ void TMapObjOptionWall::onCollision() { unk68->setUp(); }
++#endif
+ 
+ void TMapObjOptionWall::offCollision() { unk68->remove(); }
+ 

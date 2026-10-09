@@ -1,0 +1,44 @@
+Reason: mod: the MARIO SIZE slider also scales how far Mario moves each walking and airborne step, so his speed and jump height follow his size
+--- a/src/Player/MarioPhysics.cpp
++++ b/src/Player/MarioPhysics.cpp
+@@ -12,6 +12,10 @@
+ #include <MSound/MSoundBGM.hpp>
+ 
+ #ifdef TARGET_PC
++// Mod: the MARIO SIZE slider (platform/gx/src/gx_mod_slider.cpp) also scales
++// how far he moves each step, so running speed and jump height grow and
++// shrink with him while the timing stays the same.
++extern "C" float port_mario_scale;
+ #include <sms_modhook.h>
+ #include <sms_modhook.h>
+ #endif
+@@ -255,8 +259,13 @@
+ 		normalY = mGroundPlane->getNormal().y;
+ 
+ 	JGeometry::TVec3<f32> next;
++#ifdef TARGET_PC
++	next.x = mPosition.x + mVel.x / 4 * normalY * port_mario_scale;
++	next.z = mPosition.z + mVel.z / 4 * normalY * port_mario_scale;
++#else
+ 	next.x = mPosition.x + mVel.x / 4 * normalY;
+ 	next.z = mPosition.z + mVel.z / 4 * normalY;
++#endif
+ 	next.y = mPosition.y;
+ 
+ 	int ret         = checkGroundAtWalking(&next);
+@@ -596,9 +605,15 @@
+ 		mVel.z = mVel.z * (mJumpParams.mJumpingMax.get() / speed);
+ 	}
+ 
++#ifdef TARGET_PC
++	next.x  = mPosition.x + 0.25f * mVel.x * port_mario_scale;
++	next.y  = getPosition().y + 0.25f * mVel.y * port_mario_scale;
++	next.z  = getPosition().z + 0.25f * mVel.z * port_mario_scale;
++#else
+ 	next.x  = mPosition.x + 0.25f * mVel.x;
+ 	next.y  = getPosition().y + 0.25f * mVel.y;
+ 	next.z  = getPosition().z + 0.25f * mVel.z;
++#endif
+ 	int ret = checkGroundAtJumping(next, param_1);
+ 	if (ret != 0)
+ 		result = ret;
