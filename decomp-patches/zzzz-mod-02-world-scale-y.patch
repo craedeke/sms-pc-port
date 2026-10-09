@@ -1,0 +1,33 @@
+Reason: mod (proof of concept): the LEVEL HEIGHT slider in the window's top-right corner scales the level's models vertically from 0.01x to 3x in real time (platform/gx/src/gx_mod_slider.cpp); collision is unchanged
+--- a/src/Map/MapModel.cpp
++++ b/src/Map/MapModel.cpp
+@@ -13,6 +13,14 @@
+ #include <MSound/MSSetSound.hpp>
+ #include <MSound/MSoundBGM.hpp>
+ 
++#ifdef TARGET_PC
++// Mod: the LEVEL HEIGHT slider (platform/gx/src/gx_mod_slider.cpp). The
++// level's models are drawn scaled vertically by port_world_scale_y; collision
++// is unchanged. port_world_scale_dirty counts down a few frames after a change.
++extern "C" float port_world_scale_y;
++extern "C" int port_world_scale_dirty;
++#endif
++
+ void TMapModel::perform(u32 cue, JDrama::TGraphics* graphics)
+ {
+ 	if (checkFlag(FLAG_DEAD))
+@@ -52,6 +60,14 @@
+ 		MActor* actor = mActor;
+ 		cue &= ~CUE_CALC_ANIM;
+ 		actor->frameUpdate();
++#ifdef TARGET_PC
++		// The map is posed once at load; re-pose it while it is scaled.
++		if (port_world_scale_y != 1.0f || port_world_scale_dirty > 0) {
++			Vec worldScale = { 1.0f, port_world_scale_y, 1.0f };
++			actor->getModel()->setBaseScale(worldScale);
++			actor->calc();
++		}
++#endif
+ 	}
+ 
+ 	mActor->perform(cue, graphics);

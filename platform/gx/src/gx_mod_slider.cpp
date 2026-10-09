@@ -1,8 +1,9 @@
-// Mod proof of concept: a "Mario size" slider in the top-right corner of the
-// game window. Dragging it sets port_mario_scale (0.25 to 2.0), which
-// decomp-patches/mod-01-mario-scale.patch applies to Mario's model every frame.
+// Mod proof of concept: sliders in the top-right corner of the game window.
+//   MARIO SIZE    port_mario_scale, 0.25 to 2 (zzzz-mod-01-mario-scale.patch)
+//   LEVEL HEIGHT  port_world_scale_y, 0.01 to 3: the level's models stretched
+//                 or squashed vertically (zzzz-mod-02-world-scale-y.patch)
 //
-// Mouse: drag the slider; right-click it to reset to 1.0. With mouse look on,
+// Mouse: drag a slider; right-click it to reset to 1.0. With mouse look on,
 // press F10 to free the cursor first. SMS_MARIO_SLIDER=0 hides it (scale 1).
 #include "gx_internal.h"
 #include "sms_gx/gx_pc.h"
@@ -20,18 +21,37 @@
 
 extern "C" float port_mario_scale;
 float port_mario_scale = 1.0f;
+// The level's vertical scale; decomp-patches/zzzz-mod-02-world-scale-y.patch
+// re-poses the map while it is not 1 or for a few frames after it changes.
+extern "C" float port_world_scale_y;
+float port_world_scale_y = 1.0f;
+extern "C" int port_world_scale_dirty;
+int port_world_scale_dirty = 0;
 
 namespace {
 
-const float kMin = 0.25f, kMax = 2.0f;
+struct Slider {
+    const char* label;
+    float* value;
+    float min, max;
+    int* dirty;  // set when the value changes, or null
+};
 
-// Panel layout in panel pixels (drawn upscaled by s_scale).
-const int kPanelW = 128, kPanelH = 26;
-const int kTrackX0 = 8, kTrackX1 = kPanelW - 8, kTrackY = 19;
+Slider s_sliders[] = {
+    {"MARIO SIZE", &port_mario_scale, 0.25f, 2.0f, nullptr},
+    {"LEVEL HEIGHT", &port_world_scale_y, 0.01f, 3.0f, &port_world_scale_dirty},
+};
+const int kCount = int(sizeof s_sliders / sizeof s_sliders[0]);
+
+// Panel layout in panel pixels (drawn upscaled by s_scale). Each row is a
+// label line with the value, then the track.
+const int kPanelW = 128, kRowH = 24, kPanelPad = 3;
+const int kPanelH = kRowH * kCount + kPanelPad;
+const int kTrackX0 = 8, kTrackX1 = kPanelW - 8, kTrackDY = 17;
 const int kMargin = 8;
 
 int s_enabled = -1;     // -1: not read from the environment yet
-bool s_dragging = false;
+int s_dragging = -1;    // the slider being dragged
 // Where the panel was last drawn, in drawable pixels.
 int s_px = 0, s_py = 0, s_scale = 2;
 
@@ -69,21 +89,35 @@ void text(std::vector<uint8_t>& px, int x, int y, const char* s, const uint8_t c
     }
 }
 
-float valueToT(float v) { return (v - kMin) / (kMax - kMin); }
+float toT(const Slider& sl, float v) { return (v - sl.min) / (sl.max - sl.min); }
+int rowTop(int i) { return kPanelPad + i * kRowH; }
 
-// Set the value from a mouse x in drawable pixels.
-void setFromX(int x) {
+void setValue(Slider& sl, float v) {
+    if (v == *sl.value) return;
+    *sl.value = v;
+    if (sl.dirty) *sl.dirty = 10;  // presents, so the game sees it for a few frames
+}
+
+// Set slider i from a mouse x in drawable pixels.
+void setFromX(int i, int x) {
+    Slider& sl = s_sliders[i];
     float local = float(x - s_px) / float(s_scale);
     float t = (local - kTrackX0) / float(kTrackX1 - kTrackX0);
     if (t < 0) t = 0;
     if (t > 1) t = 1;
-    float v = kMin + t * (kMax - kMin);
-    if (v > 0.96f && v < 1.04f) v = 1.0f;  // snap to normal size
-    port_mario_scale = v;
+    float v = sl.min + t * (sl.max - sl.min);
+    const float snap = (sl.max - sl.min) * 0.02f;  // snap to normal size
+    if (v > 1.0f - snap && v < 1.0f + snap) v = 1.0f;
+    setValue(sl, v);
 }
 
-bool inside(int x, int y) {
-    return x >= s_px && x < s_px + kPanelW * s_scale && y >= s_py && y < s_py + kPanelH * s_scale;
+// The slider row under a point in drawable pixels, or -1.
+int rowAt(int x, int y) {
+    if (x < s_px || x >= s_px + kPanelW * s_scale || y < s_py || y >= s_py + kPanelH * s_scale) return -1;
+    int local = (y - s_py) / s_scale - kPanelPad;
+    if (local < 0) local = 0;
+    int i = local / kRowH;
+    return i < kCount ? i : kCount - 1;
 }
 
 }  // namespace
@@ -91,8 +125,10 @@ bool inside(int x, int y) {
 extern "C" {
 
 void GXPC_ModSliderDraw(int winW, int winH) {
+    if (port_world_scale_dirty > 0) port_world_scale_dirty--;
     if (!enabled()) {
         port_mario_scale = 1.0f;
+        port_world_scale_y = 1.0f;
         return;
     }
     s_scale = winH >= 1400 ? 3 : 2;
@@ -102,22 +138,27 @@ void GXPC_ModSliderDraw(int winW, int winH) {
     std::vector<uint8_t> px(size_t(kPanelW) * kPanelH * 4);
     const uint8_t bg[4] = {16, 16, 24, 150};
     const uint8_t fg[4] = {255, 255, 255, 255};
+    const uint8_t dim[4] = {255, 220, 64, 255};
     const uint8_t track[4] = {110, 110, 130, 255};
     const uint8_t fillc[4] = {230, 40, 40, 255};  // Mario red
     const uint8_t knob[4] = {255, 220, 64, 255};
     fill(px, 0, 0, kPanelW, kPanelH, bg);
 
-    char label[32];
-    snprintf(label, sizeof label, "MARIO SIZE  x%.2f", port_mario_scale);
-    text(px, kTrackX0, 3, label, fg);
+    for (int i = 0; i < kCount; i++) {
+        const Slider& sl = s_sliders[i];
+        const int top = rowTop(i), ty = top + kTrackDY;
+        char value[16];
+        snprintf(value, sizeof value, "x%.2f", *sl.value);
+        text(px, kTrackX0, top + 2, sl.label, fg);
+        text(px, kTrackX1 - stb_easy_font_width(value), top + 2, value, dim);
 
-    const int tx = kTrackX0 + int(valueToT(port_mario_scale) * (kTrackX1 - kTrackX0) + 0.5f);
-    fill(px, kTrackX0, kTrackY - 1, kTrackX1, kTrackY + 1, track);
-    fill(px, kTrackX0, kTrackY - 1, tx, kTrackY + 1, fillc);
-    // tick at 1.0
-    const int one = kTrackX0 + int(valueToT(1.0f) * (kTrackX1 - kTrackX0) + 0.5f);
-    fill(px, one, kTrackY - 3, one + 1, kTrackY + 3, track);
-    fill(px, tx - 2, kTrackY - 4, tx + 2, kTrackY + 4, knob);
+        const int tx = kTrackX0 + int(toT(sl, *sl.value) * (kTrackX1 - kTrackX0) + 0.5f);
+        fill(px, kTrackX0, ty - 1, kTrackX1, ty + 1, track);
+        fill(px, kTrackX0, ty - 1, tx, ty + 1, fillc);
+        const int one = kTrackX0 + int(toT(sl, 1.0f) * (kTrackX1 - kTrackX0) + 0.5f);  // tick at 1.0
+        fill(px, one, ty - 3, one + 1, ty + 3, track);
+        fill(px, tx - 2, ty - 4, tx + 2, ty + 4, knob);
+    }
 
     GXPC_DrawOverlay(px.data(), kPanelW, kPanelH, s_px, s_py, s_scale, winW, winH);
 }
@@ -145,22 +186,24 @@ int GXPC_ModSliderEvent(const SDL_Event* ev, SDL_Window* window) {
     my = my * dh / (wh > 0 ? wh : 1);
 
     switch (ev->type) {
-    case SDL_MOUSEBUTTONDOWN:
-        if (!inside(mx, my)) return 0;
+    case SDL_MOUSEBUTTONDOWN: {
+        const int i = rowAt(mx, my);
+        if (i < 0) return 0;
         if (ev->button.button == SDL_BUTTON_RIGHT) {
-            port_mario_scale = 1.0f;
+            setValue(s_sliders[i], 1.0f);
         } else if (ev->button.button == SDL_BUTTON_LEFT) {
-            s_dragging = true;
-            setFromX(mx);
+            s_dragging = i;
+            setFromX(i, mx);
         }
         return 1;
+    }
     case SDL_MOUSEMOTION:
-        if (!s_dragging) return 0;
-        setFromX(mx);
+        if (s_dragging < 0) return 0;
+        setFromX(s_dragging, mx);
         return 1;
     case SDL_MOUSEBUTTONUP:
-        if (!s_dragging || ev->button.button != SDL_BUTTON_LEFT) return 0;
-        s_dragging = false;
+        if (s_dragging < 0 || ev->button.button != SDL_BUTTON_LEFT) return 0;
+        s_dragging = -1;
         return 1;
     }
     return 0;
