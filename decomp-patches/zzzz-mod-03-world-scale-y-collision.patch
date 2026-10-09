@@ -1,0 +1,105 @@
+Reason: mod (proof of concept): the LEVEL HEIGHT slider scales the level's static collision vertically with its models, and moves Mario with the ground under him
+--- a/src/Map/Map.cpp
++++ b/src/Map/Map.cpp
+@@ -27,6 +27,91 @@
+ #include <MSound/MSoundBGM.hpp>
+ #include <M3DUtil/InfectiousStrings.hpp>
+ #include <Map/MapCollisionEntry.hpp>
++
++#ifdef TARGET_PC
++#include <stdlib.h>
++
++// Mod: the LEVEL HEIGHT slider (platform/gx/src/gx_mod_slider.cpp) scales the
++// level's static collision vertically with its models (MapModel.cpp), about
++// y = 0 as the models are. Triangles stay in their grid cells (the grid is
++// X/Z only) and a positive scale keeps every list's height order.
++extern "C" float port_world_scale_y;
++
++namespace {
++
++TBGCheckData* s_portScaledDatas = nullptr;
++u32 s_portScaledNum             = 0;
++f32* s_portOrigPoints           = nullptr; // 9 floats per triangle, as loaded
++f32 s_portAppliedScale          = 1.0f;
++
++// Is the stage's collision still the one we scaled, at s_portAppliedScale?
++bool portCollisionIsOurs(TBGCheckData* datas, u32 num)
++{
++	if (datas != s_portScaledDatas || num != s_portScaledNum
++	    || s_portOrigPoints == nullptr)
++		return false;
++	// a reloaded stage can reuse the same pool slot: check a few vertices
++	for (u32 i = 0; i < num; i += (num / 8) + 1) {
++		const f32* o = &s_portOrigPoints[i * 9];
++		if (datas[i].mPoint1.x != o[0] || datas[i].mPoint1.z != o[2]
++		    || datas[i].mPoint1.y != o[1] * s_portAppliedScale)
++			return false;
++	}
++	return true;
++}
++
++void portScaleStaticCollision(TMapCollisionBase* col)
++{
++	if (col == nullptr || col->mCheckDatas == nullptr || col->mCheckDataNum == 0)
++		return;
++	TBGCheckData* datas = col->mCheckDatas;
++	const u32 num       = col->mCheckDataNum;
++
++	if (!portCollisionIsOurs(datas, num)) {
++		// a new (or reloaded) stage: remember its triangles as loaded
++		free(s_portOrigPoints);
++		s_portOrigPoints = (f32*)malloc(sizeof(f32) * 9 * num);
++		s_portScaledDatas = nullptr;
++		if (s_portOrigPoints == nullptr)
++			return;
++		for (u32 i = 0; i < num; ++i) {
++			f32* o = &s_portOrigPoints[i * 9];
++			o[0] = datas[i].mPoint1.x;
++			o[1] = datas[i].mPoint1.y;
++			o[2] = datas[i].mPoint1.z;
++			o[3] = datas[i].mPoint2.x;
++			o[4] = datas[i].mPoint2.y;
++			o[5] = datas[i].mPoint2.z;
++			o[6] = datas[i].mPoint3.x;
++			o[7] = datas[i].mPoint3.y;
++			o[8] = datas[i].mPoint3.z;
++		}
++		s_portScaledDatas  = datas;
++		s_portScaledNum    = num;
++		s_portAppliedScale = 1.0f;
++	}
++
++	const f32 scale = port_world_scale_y;
++	if (scale == s_portAppliedScale)
++		return;
++
++	for (u32 i = 0; i < num; ++i) {
++		const f32* o = &s_portOrigPoints[i * 9];
++		JGeometry::TVec3<f32> p1(o[0], o[1] * scale, o[2]);
++		JGeometry::TVec3<f32> p2(o[3], o[4] * scale, o[5]);
++		JGeometry::TVec3<f32> p3(o[6], o[7] * scale, o[8]);
++		datas[i].setVertex(p1, p2, p3);
++	}
++
++	// keep Mario at the same spot on the stretched level
++	if (gpMarioPos != nullptr)
++		gpMarioPos->y *= scale / s_portAppliedScale;
++
++	s_portAppliedScale = scale;
++}
++
++} // namespace
++#endif
+ #ifdef TARGET_PC
+ #include <sms_modhook.h>
+ #include <sms_modhook.h>
+@@ -519,6 +604,9 @@
+ void TMap::perform(u32 cue, JDrama::TGraphics* graphics)
+ {
+ 	if (cue & CUE_MOVE) {
++#ifdef TARGET_PC
++		portScaleStaticCollision(mModelManager->mCollision);
++#endif
+ 		update();
+ 		mCollisionData->initMoveCollision();
+ 		mWarp->watchToWarp();
